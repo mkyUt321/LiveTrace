@@ -2,6 +2,7 @@
 #include "ns3/observation-log.h"
 #include "ns3/random-mesh-topology.h"
 #include "ns3/test.h"
+#include "ns3/timing-correlator.h"
 
 #include <cstdio>
 #include <fstream>
@@ -133,6 +134,62 @@ class ObservationLogTestCase : public TestCase
     }
 };
 
+class TimingCorrelatorTestCase : public TestCase
+{
+  public:
+    TimingCorrelatorTestCase()
+        : TestCase("TimingCorrelator finds the true upstream match over background noise")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        ObservationLog log;
+
+        // Reference flow: the confirmed downstream flow (relay -> victim),
+        // an on/off pattern of two ~0.3s bursts separated by a ~0.4s gap.
+        std::vector<double> onIntervals = {0.0, 0.3, 0.7, 1.0};
+        auto emitBurstPattern = [&](const std::string& flowKey, uint32_t txNode, uint32_t rxNode, double jitter) {
+            for (size_t seg = 0; seg + 1 < onIntervals.size(); seg += 2)
+            {
+                for (double t = onIntervals[seg]; t < onIntervals[seg + 1]; t += 0.02)
+                {
+                    log.RecordSend(txNode, flowKey, t, 512);
+                    log.RecordRecv(rxNode, flowKey, t + jitter, 512);
+                }
+            }
+        };
+
+        emitBurstPattern("ref_flow", 100, 1, 0.005);      // reference: relay(1) <- ... already confirmed
+        emitBurstPattern("true_upstream", 200, 1, 0.006); // true match: same on/off shape, tiny extra jitter
+
+        // Noise flow at the same candidate node: unrelated, roughly-constant
+        // low-rate chatter with no matching on/off structure.
+        for (double t = 0.0; t < 1.0; t += 0.05)
+        {
+            log.RecordSend(300, "noise_flow", t, 512);
+            log.RecordRecv(1, "noise_flow", t + 0.005, 512);
+        }
+
+        TimingCorrelator::Config ccfg;
+        ccfg.bucketS = 0.05;
+        ccfg.onThresholdPps = 1.0;
+        ccfg.minOnOffTransitions = 2;
+        ccfg.maxLagBuckets = 2;
+        TimingCorrelator correlator(&log, ccfg);
+
+        auto match = correlator.FindBestUpstreamMatch("ref_flow", /*candidateNodeId=*/1, 0.0, 1.0,
+                                                        /*scoreThreshold=*/0.5, {"ref_flow"});
+        NS_TEST_ASSERT_MSG_EQ(match.valid, true, "true upstream match should score above threshold");
+        NS_TEST_ASSERT_MSG_EQ(match.flowKey, "true_upstream", "correlator should pick the true match, not noise");
+
+        double noiseScore = correlator.Correlate(correlator.ComputeOnOffSignal("ref_flow", 0.0, 1.0),
+                                                   correlator.ComputeOnOffSignal("noise_flow", 0.0, 1.0));
+        NS_TEST_ASSERT_MSG_GT(match.score, noiseScore, "true match must score higher than background noise");
+    }
+};
+
 class LiveTraceTestSuite : public TestSuite
 {
   public:
@@ -142,6 +199,7 @@ class LiveTraceTestSuite : public TestSuite
         AddTestCase(new TopologyConnectivityTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new ConfigLoaderTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new ObservationLogTestCase(), TestCase::Duration::QUICK);
+        AddTestCase(new TimingCorrelatorTestCase(), TestCase::Duration::QUICK);
     }
 };
 

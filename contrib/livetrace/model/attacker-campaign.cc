@@ -152,17 +152,20 @@ AttackerCampaign::FireBurst()
     uint16_t originLocalPort = InetSocketAddress::ConvertFrom(boundAddr).GetPort();
     std::string originFlowKey = MakeFlowKey(m_nodeAddresses[origin], originLocalPort, firstHopAddr, firstHopPort);
 
-    std::uniform_int_distribution<uint32_t> subBurstCountPick(2, 4);
+    // Sub-burst (ON) / idle-gap (OFF) cadence: deliberately short relative to
+    // the live window so a handful of on/off transitions -- what timing
+    // correlation actually needs -- show up within the first second or two
+    // of the burst, not only once the whole burst_s has elapsed.
+    std::uniform_int_distribution<uint32_t> subBurstCountPick(5, 8);
     uint32_t numSubBursts = std::min(subBurstCountPick(m_rng), m_cfg.packetsPerBurst > 0 ? m_cfg.packetsPerBurst : 1);
     numSubBursts = std::max<uint32_t>(numSubBursts, 1);
-    uint32_t packetsPerSub = m_cfg.packetsPerBurst / numSubBursts;
-    uint32_t remainder = m_cfg.packetsPerBurst - packetsPerSub * numSubBursts;
+    uint32_t packetsPerSub = std::max<uint32_t>(3, m_cfg.packetsPerBurst / numSubBursts);
+    uint32_t remainder = m_cfg.packetsPerBurst > packetsPerSub * numSubBursts
+                             ? m_cfg.packetsPerBurst - packetsPerSub * numSubBursts
+                             : 0;
 
     double intraGapS = 0.01; // 10ms between packets within one ON interval
-    double onDurationEach = packetsPerSub * intraGapS;
-    double totalOnTime = onDurationEach * numSubBursts;
-    double idleBudget = std::max(0.0, m_cfg.burstS - totalOnTime - 0.1);
-    double idleGapEach = numSubBursts > 1 ? idleBudget / (numSubBursts - 1) : 0.0;
+    std::uniform_real_distribution<double> idleGapPick(0.15, 0.4);
 
     double t = 0.0;
     for (uint32_t s = 0; s < numSubBursts; ++s)
@@ -170,7 +173,7 @@ AttackerCampaign::FireBurst()
         uint32_t countThisSub = packetsPerSub + (s == 0 ? remainder : 0);
         Simulator::Schedule(Seconds(t), &AttackerCampaign::SendSubBurstPackets, this, sock, countThisSub,
                              intraGapS, m_cfg.packetSizeBytes, origin, originFlowKey);
-        t += countThisSub * intraGapS + idleGapEach;
+        t += countThisSub * intraGapS + idleGapPick(m_rng);
     }
 
     Simulator::Schedule(Seconds(m_cfg.burstS + stopSlack), [this, sock]() {

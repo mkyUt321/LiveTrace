@@ -9,6 +9,9 @@
 #include "ns3/random-variable-stream.h"
 #include "ns3/socket.h"
 
+#include <functional>
+#include <string>
+
 namespace ns3
 {
 namespace livetrace
@@ -29,6 +32,9 @@ namespace livetrace
 class StepstoneRelayApp : public Application
 {
   public:
+    /// nodeId, flowKey, timeS, peerAddr (the sender's address for this packet).
+    using RecvNotifyFn = std::function<void(uint32_t, std::string, double, Ipv4Address)>;
+
     static TypeId GetTypeId();
     StepstoneRelayApp();
     ~StepstoneRelayApp() override;
@@ -40,6 +46,11 @@ class StepstoneRelayApp : public Application
                bool isTerminal,
                Ipv4Address forwardAddr = Ipv4Address(),
                uint16_t forwardPort = 0);
+
+    /// Optional hook fired synchronously on every packet arrival (after it
+    /// is logged to ObservationLog). Used by the traceback observer to know
+    /// when a new flow starts at a node it is watching.
+    void SetRecvNotify(RecvNotifyFn fn);
 
   private:
     void StartApplication() override;
@@ -57,6 +68,7 @@ class StepstoneRelayApp : public Application
     Ipv4Address m_forwardAddr;
     uint16_t m_forwardPort;
     Ptr<UniformRandomVariable> m_relayDelay;
+    RecvNotifyFn m_recvNotify;
 };
 
 } // namespace livetrace

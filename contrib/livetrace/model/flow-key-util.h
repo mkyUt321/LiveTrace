@@ -35,6 +35,27 @@ MakeFlowKey(Ipv4Address srcAddr, uint16_t srcPort, Ipv4Address dstAddr, uint16_t
     return AddrPortStr(srcAddr, srcPort) + "->" + AddrPortStr(dstAddr, dstPort);
 }
 
+/// Parses the "<addr>:<port>" side (src, before "->", or dst, after) back
+/// out of a flow key. This is just undoing our own string formatting, not
+/// deep packet inspection -- the equivalent of a monitor reading the 5-tuple
+/// off a captured packet.
+inline Ipv4Address
+FlowKeySideAddr(const std::string& flowKey, bool wantSrc)
+{
+    size_t arrow = flowKey.find("->");
+    if (arrow == std::string::npos)
+    {
+        return Ipv4Address();
+    }
+    std::string side = wantSrc ? flowKey.substr(0, arrow) : flowKey.substr(arrow + 2);
+    size_t colon = side.rfind(':');
+    if (colon == std::string::npos)
+    {
+        return Ipv4Address();
+    }
+    return Ipv4Address(side.substr(0, colon).c_str());
+}
+
 } // namespace livetrace
 } // namespace ns3
 
