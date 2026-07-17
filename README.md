@@ -16,6 +16,14 @@ rather than discarded.
 The oracle (true actor identity, true chain) is logged only for offline
 scoring; the traceback/correlation/re-identification code never reads it.
 
+**Current headline result** (`docs/summaries/phase4.md`, N=20..320, 5 seeds
+each, chain length 2-5, 5s window): trace success rate is 1.000 ± 0.000 at
+every N tested -- the central difficulty does not bite yet in this parameter
+regime. That's a genuine boundary observation, not a limitation being
+glossed over: chain length is capped independent of N and the window budget
+(~5-6 hops) comfortably covers it. See the summary for what parameter axis
+would need to move to expose the actual difficulty.
+
 ## Environment (pinned for this project)
 
 - ns-3-dev **3.48** (debug build, runtime asserts + logging on), built at
@@ -66,6 +74,21 @@ Run the ns-3 unit tests for this module:
 cd "$NS3_DIR" && ./test.py -s livetrace
 ```
 
+## Reproducing the scale sweep (Phase 4's main result)
+
+```bash
+tools/run_sweep.sh config/default.yaml results   # ~40 min for the default 5x5 grid
+python3 analysis/evaluate_phase4.py --results-dir results \
+    --n-values 20 40 80 160 320 --seeds 1 2 3 4 5
+python3 analysis/plot_sweep.py --csv results/sweep_summary.csv --out-dir results
+```
+
+This writes `results/sweep_summary.csv` and `results/scale_sweep.png` (mean ±
+95% CI, four panels, N on a log axis). Open any `results/netanim_*.xml` in
+NetAnim to watch the traceback observer highlight confirmed hops live as it
+runs -- red for a hop the online correlator just confirmed, blue for the
+victim.
+
 ## Design decisions and why
 
 - **Topology: Erdős–Rényi G(n,p), fixed as the sole generator.** Edge density
@@ -88,6 +111,16 @@ cd "$NS3_DIR" && ./test.py -s livetrace
   `OracleLogger` is constructed only in the simulation driver and handed
   exclusively to the attacker campaign; no other class (relay, background
   traffic, correlator, observer, re-id engine) is ever given a pointer to it.
+- **Nix-vector routing, not `Ipv4GlobalRoutingHelper`.** Global routing
+  precomputes all-pairs routes and is well known not to scale; it made
+  N=160 take longer than 5 minutes just to set up. Nix-vector computes
+  routes on demand and made the full N=320 sweep cell tractable (~7.5 min
+  including the whole 900s simulated run, not just setup).
+- **Background traffic rate scales with N** (`background.rate_pps` is
+  per-node, multiplied by N in the driver) so ambient noise density per node
+  -- and thus the correlator's candidate pool size -- stays comparable
+  across the sweep instead of thinning out as the same fixed aggregate rate
+  spreads over more nodes.
 
 See `docs/summaries/` for the per-phase parameters, metrics, and results as
 they're produced.
