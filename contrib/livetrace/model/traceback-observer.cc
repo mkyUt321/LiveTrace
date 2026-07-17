@@ -4,6 +4,8 @@
 
 #include "ns3/simulator.h"
 
+#include <algorithm>
+
 namespace ns3
 {
 namespace livetrace
@@ -21,7 +23,7 @@ TracebackObserver::TracebackObserver(ObservationLog* obsLog,
       m_victimNodeId(victimNodeId),
       m_cfg(cfg),
       m_out(outPath),
-      m_nextAttemptId(0)
+      m_nextTraceId(0)
 {
 }
 
@@ -38,9 +40,11 @@ TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double t
     }
     m_seenAtVictim.insert(flowKey);
 
+    uint32_t traceId = m_nextTraceId++;
     Simulator::Schedule(Seconds(m_cfg.accumulationDelayS),
                          &TracebackObserver::AttemptTrace,
                          this,
+                         traceId,
                          flowKey,
                          timeS,
                          0u,
@@ -48,16 +52,16 @@ TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double t
 }
 
 void
-TracebackObserver::AttemptTrace(std::string confirmedFlowKey,
+TracebackObserver::AttemptTrace(uint32_t traceId,
+                                 std::string confirmedFlowKey,
                                  double burstDetectTimeS,
                                  uint32_t hopsSoFar,
                                  std::vector<uint32_t> chainSoFar)
 {
-    uint32_t attemptId = m_nextAttemptId++;
     double now = Simulator::Now().GetSeconds();
 
     auto writeResult = [&](const std::string& stopReason, const std::string& matchedFlow, double score) {
-        m_out << "{\"attempt_id\":" << attemptId << ",\"burst_detect_time_s\":" << burstDetectTimeS
+        m_out << "{\"trace_id\":" << traceId << ",\"burst_detect_time_s\":" << burstDetectTimeS
               << ",\"hops_so_far\":" << hopsSoFar << ",\"chain_so_far\":[";
         for (size_t i = 0; i < chainSoFar.size(); ++i)
         {
@@ -76,6 +80,16 @@ TracebackObserver::AttemptTrace(std::string confirmedFlowKey,
     if (peerNode == NodeAddressIndex::kNotFound)
     {
         writeResult("unknown_peer_address", "", -1.0);
+        return;
+    }
+
+    if (std::find(chainSoFar.begin(), chainSoFar.end(), peerNode) != chainSoFar.end())
+    {
+        // A false-positive correlation looped back to an already-confirmed
+        // node; stop rather than spin. Recorded as its own outcome since a
+        // real observer has no other way to detect this than a repeat visit.
+        chainSoFar.push_back(peerNode);
+        writeResult("cycle_detected", "", -1.0);
         return;
     }
     chainSoFar.push_back(peerNode);
@@ -98,13 +112,28 @@ TracebackObserver::AttemptTrace(std::string confirmedFlowKey,
 
     if (!match.valid)
     {
+        // Either the trail truly ends here (peerNode is the attack's origin,
+        // which never has an inbound flow to find) or the trail was lost;
+        // both are legitimate, recorded outcomes -- evaluation (with oracle
+        // access) is what tells them apart after the fact.
         writeResult("no_match_above_threshold", match.flowKey, match.score);
         return;
     }
 
     writeResult("matched", match.flowKey, match.score);
-    // Phase 2 extends this: recurse into AttemptTrace(match.flowKey, burstDetectTimeS,
-    // hopsSoFar + 1, chainSoFar) with live-window budget and origin detection.
+
+    // Each further hop costs its own slice of the live window -- this is
+    // what makes hop count and time-to-trace a real tradeoff against the
+    // 5-second budget rather than something resolved instantly regardless
+    // of chain depth.
+    Simulator::Schedule(Seconds(m_cfg.hopDelayS),
+                         &TracebackObserver::AttemptTrace,
+                         this,
+                         traceId,
+                         match.flowKey,
+                         burstDetectTimeS,
+                         hopsSoFar + 1,
+                         chainSoFar);
 }
 
 } // namespace livetrace
