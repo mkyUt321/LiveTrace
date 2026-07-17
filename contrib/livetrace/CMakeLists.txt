@@ -33,4 +33,5 @@ build_lib(
     ${libinternet}
     ${libpoint-to-point}
     ${libapplications}
+    ${libnix-vector-routing}
 )

@@ -146,6 +146,12 @@ main(int argc, char* argv[])
         }
     }
 
+    // NetAnim: constructed early so the traceback observer can drive node
+    // colors live as hops are confirmed (qualitative view of Phase 5).
+    AnimationInterface anim(netanimPath);
+    anim.SetMaxPktsPerTraceFile(500000);
+    anim.UpdateNodeColor(victimNodeId, 0, 0, 255); // victim: blue
+
     // Victim's well-known service listener: the endpoint the attacker chain
     // ultimately targets. Runs for the whole simulation.
     Ptr<StepstoneRelayApp> victimSink = CreateObject<StepstoneRelayApp>();
@@ -176,7 +182,7 @@ main(int argc, char* argv[])
     reidCfg.periodicityWeight = cfg.GetDouble("reidentification.periodicity_weight", 0.40);
     reidCfg.timingWeight = cfg.GetDouble("reidentification.timing_weight", 0.45);
     reidCfg.fingerprintWeight = cfg.GetDouble("reidentification.fingerprint_weight", 0.15);
-    reidCfg.clusterScoreThreshold = cfg.GetDouble("reidentification.cluster_score_threshold", 0.55);
+    reidCfg.clusterScoreThreshold = cfg.GetDouble("reidentification.cluster_score_threshold", 0.5);
     ReidentificationEngine reid(&obsLog, &correlator, reidCfg, reidPath);
 
     if (cfg.GetBool("correlation.enabled", true))
@@ -188,11 +194,18 @@ main(int argc, char* argv[])
                                                  std::string stopReason, std::string hop0FlowKey) {
             reid.OnTraceComplete(traceId, detectTimeS, chain, stopReason, hop0FlowKey);
         });
+        observer.SetHopConfirmedNotify([&anim](uint32_t /*traceId*/, uint32_t nodeId, uint32_t /*hopsSoFar*/,
+                                                double /*evalTimeS*/) {
+            anim.UpdateNodeColor(nodeId, 255, 0, 0); // confirmed relay: red
+        });
     }
 
-    // Background traffic (ordinary noise, no ground truth).
+    // Background traffic (ordinary noise, no ground truth). The configured
+    // rate is per-node; scale by network size so ambient traffic density at
+    // any one node stays roughly constant across the N sweep, rather than
+    // thinning out as the same fixed aggregate rate spreads over more nodes.
     BackgroundTraffic::Config bgCfg;
-    bgCfg.ratePps = cfg.GetDouble("background.rate_pps", 4.0);
+    bgCfg.ratePps = cfg.GetDouble("background.rate_pps", 4.0) * std::max<uint32_t>(1, n);
     bgCfg.packetSizeBytes = static_cast<uint32_t>(cfg.GetInt("background.packet_size_bytes", 512));
     bgCfg.listenPort = kBackgroundPort;
     BackgroundTraffic background(nodes, nodeAddresses, &obsLog, bgCfg, seed * 1000 + 7, stopTimeS);
@@ -225,9 +238,6 @@ main(int argc, char* argv[])
         campaign->Start();
         campaigns.push_back(std::move(campaign));
     }
-
-    AnimationInterface anim(netanimPath);
-    anim.SetMaxPktsPerTraceFile(500000);
 
     Simulator::Stop(Seconds(stopTimeS + 5.0));
     Simulator::Run();
