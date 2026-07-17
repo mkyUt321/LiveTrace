@@ -41,8 +41,11 @@ correlation:
   max_lag_buckets: 3     # small-misalignment search window (relay delay/jitter)
 
 traceback:
-  accumulation_delay_s: 2.0  # let this much of the burst accumulate before correlating
-  max_hops: 1                 # Phase 1: single hop only; Phase 2 raises this / makes it window-bounded
+  accumulation_delay_s: 2.0  # let this much of the burst accumulate before the first correlation
+  hop_delay_s: 0.6            # additional cost paid at each subsequent hop -- this is what makes
+                               # hop count trade off against the live window budget
+  max_hops: 10                 # safety cap well above chain_length_max; the live window is the
+                               # real stopping condition in practice
 
 reidentification:
   periodicity_tolerance_s: 5.0

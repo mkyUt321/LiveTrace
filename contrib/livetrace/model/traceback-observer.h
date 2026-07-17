@@ -36,7 +36,8 @@ class TracebackObserver
     struct Config
     {
         double liveWindowS;
-        double accumulationDelayS; // wait this long after first packet before correlating
+        double accumulationDelayS; // wait this long after first packet before the first correlation
+        double hopDelayS;          // additional wait before each subsequent hop's correlation
         uint32_t maxHops;
         double scoreThreshold;
     };
@@ -52,7 +53,8 @@ class TracebackObserver
     void OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr);
 
   private:
-    void AttemptTrace(std::string confirmedFlowKey,
+    void AttemptTrace(uint32_t traceId,
+                       std::string confirmedFlowKey,
                        double burstDetectTimeS,
                        uint32_t hopsSoFar,
                        std::vector<uint32_t> chainSoFar);
@@ -64,7 +66,7 @@ class TracebackObserver
     Config m_cfg;
     std::ofstream m_out;
     std::set<std::string> m_seenAtVictim;
-    uint32_t m_nextAttemptId;
+    uint32_t m_nextTraceId;
 };
 
 } // namespace livetrace
