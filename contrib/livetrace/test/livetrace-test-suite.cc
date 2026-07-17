@@ -1,10 +1,13 @@
 #include "ns3/livetrace-config.h"
 #include "ns3/observation-log.h"
 #include "ns3/random-mesh-topology.h"
+#include "ns3/reidentification-engine.h"
 #include "ns3/test.h"
 #include "ns3/timing-correlator.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <queue>
@@ -190,6 +193,97 @@ class TimingCorrelatorTestCase : public TestCase
     }
 };
 
+class ReidentificationEngineTestCase : public TestCase
+{
+  public:
+    ReidentificationEngineTestCase()
+        : TestCase("ReidentificationEngine separates two periodic actors by periodicity+convergence+timing")
+    {
+    }
+
+  private:
+    static void EmitPattern(ObservationLog& log, const std::string& flowKey, double t0)
+    {
+        for (int seg = 0; seg < 3; ++seg)
+        {
+            double segStart = t0 + seg * 0.3;
+            for (double t = segStart; t < segStart + 0.1; t += 0.02)
+            {
+                log.RecordSend(100, flowKey, t, 512);
+                log.RecordRecv(0, flowKey, t + 0.005, 512);
+            }
+        }
+    }
+
+    void DoRun() override
+    {
+        ObservationLog log;
+        TimingCorrelator::Config corrCfg;
+        corrCfg.bucketS = 0.05;
+        corrCfg.onThresholdPps = 1.0;
+        corrCfg.minOnOffTransitions = 2;
+        corrCfg.maxLagBuckets = 2;
+        TimingCorrelator correlator(&log, corrCfg);
+
+        ReidentificationEngine::Config reidCfg;
+        reidCfg.periodPriorS = 40.0;
+        reidCfg.periodicityToleranceS = 3.0;
+        reidCfg.evidenceWindowS = 1.0;
+        reidCfg.periodicityWeight = 0.40;
+        reidCfg.timingWeight = 0.45;
+        reidCfg.fingerprintWeight = 0.15;
+        reidCfg.clusterScoreThreshold = 0.5;
+
+        std::string outPath = "livetrace-test-reid.jsonl";
+        {
+            ReidentificationEngine engine(&log, &correlator, reidCfg, outPath);
+
+            // Actor A: period 40s starting at t=0, relays {1,2}.
+            // Actor B: period 40s starting at t=5 (different phase), relays {3,4}.
+            struct Burst
+            {
+                uint32_t traceId;
+                double t;
+                std::string flowKey;
+                std::vector<uint32_t> chain;
+            };
+            std::vector<Burst> bursts = {
+                {0, 0.0, "A0", {0, 1, 2, 1000}},   {1, 5.0, "B5", {0, 3, 4, 2000}},
+                {2, 40.0, "A40", {0, 1, 2, 1001}}, {3, 45.0, "B45", {0, 3, 4, 2001}},
+                {4, 80.0, "A80", {0, 1, 2, 1002}}, {5, 85.0, "B85", {0, 3, 4, 2002}},
+            };
+            for (const auto& b : bursts)
+            {
+                EmitPattern(log, b.flowKey, b.t);
+                engine.OnTraceComplete(b.traceId, b.t, b.chain, "no_match_above_threshold", b.flowKey);
+            }
+        } // engine destructor flushes/closes outPath
+
+        std::ifstream in(outPath);
+        std::map<uint32_t, int> traceToCluster;
+        std::string line;
+        while (std::getline(in, line))
+        {
+            size_t tp = line.find("\"trace_id\":");
+            size_t cp = line.find("\"assigned_cluster_id\":");
+            NS_TEST_ASSERT_MSG_EQ(tp != std::string::npos && cp != std::string::npos, true,
+                                  "reid output line must contain trace_id and assigned_cluster_id");
+            uint32_t traceId = static_cast<uint32_t>(std::atoi(line.c_str() + tp + strlen("\"trace_id\":")));
+            int clusterId = std::atoi(line.c_str() + cp + strlen("\"assigned_cluster_id\":"));
+            traceToCluster[traceId] = clusterId;
+        }
+        in.close();
+        std::remove(outPath.c_str());
+
+        NS_TEST_ASSERT_MSG_EQ(traceToCluster.size(), 6u, "expected one reid record per burst");
+        NS_TEST_ASSERT_MSG_EQ(traceToCluster[0], traceToCluster[2], "actor A's bursts should share a cluster");
+        NS_TEST_ASSERT_MSG_EQ(traceToCluster[2], traceToCluster[4], "actor A's bursts should share a cluster");
+        NS_TEST_ASSERT_MSG_EQ(traceToCluster[1], traceToCluster[3], "actor B's bursts should share a cluster");
+        NS_TEST_ASSERT_MSG_EQ(traceToCluster[3], traceToCluster[5], "actor B's bursts should share a cluster");
+        NS_TEST_ASSERT_MSG_NE(traceToCluster[0], traceToCluster[1], "actor A and B must not share a cluster");
+    }
+};
+
 class LiveTraceTestSuite : public TestSuite
 {
   public:
@@ -200,6 +294,7 @@ class LiveTraceTestSuite : public TestSuite
         AddTestCase(new ConfigLoaderTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new ObservationLogTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new TimingCorrelatorTestCase(), TestCase::Duration::QUICK);
+        AddTestCase(new ReidentificationEngineTestCase(), TestCase::Duration::QUICK);
     }
 };
 

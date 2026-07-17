@@ -40,6 +40,12 @@ class AttackerCampaign
         uint32_t chainLenMax;
         uint32_t packetsPerBurst;
         uint32_t packetSizeBytes;
+        double relayPoolFraction; // this actor draws intermediate relays only from a
+                                  // private random subset of this size (origin is still
+                                  // freely chosen from the whole network every period,
+                                  // per spec) -- models reuse of a semi-persistent
+                                  // stepping-stone pool, which is what gives Phase 3's
+                                  // "path convergence" signal real substance.
     };
 
     AttackerCampaign(NodeContainer nodes,
@@ -75,6 +81,7 @@ class AttackerCampaign
     std::mt19937 m_rng;
     double m_stopTimeS;
     std::vector<Ptr<Socket>> m_activeSockets;
+    std::vector<uint32_t> m_relayPool; // this actor's private candidate relay set
 };
 
 } // namespace livetrace
