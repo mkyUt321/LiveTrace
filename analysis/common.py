@@ -33,6 +33,7 @@ class RunLogs:
     n: int
     oracle_bursts: list = field(default_factory=list)   # {burst_id, true_actor_id, start_time_s, true_chain}
     traceback: list = field(default_factory=list)       # {attempt_id, burst_detect_time_s, chain_so_far, stop_reason, matched_flow, score}
+    reid: list = field(default_factory=list)             # {trace_id, detect_time_s, assigned_cluster_id, score, chain}
     events: list = field(default_factory=list)           # {t, node, dir, flow, bytes}
     addr_to_node: dict = field(default_factory=dict)     # "10.0.0.1" -> node_id
 
@@ -46,6 +47,7 @@ def load_run(results_dir: Path, seed: int, n: int, tag_suffix: str = "") -> RunL
             run.oracle_bursts.append(rec)
 
     run.traceback = read_jsonl(results_dir / f"traceback_{tag}.jsonl")
+    run.reid = read_jsonl(results_dir / f"reid_{tag}.jsonl")
     run.events = read_jsonl(results_dir / f"observed_{tag}.jsonl")
 
     for rec in read_jsonl(results_dir / f"topology_{tag}.jsonl"):
