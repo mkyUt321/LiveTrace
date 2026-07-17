@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Phase 2 evaluation: hop-by-hop live-window traceback.
+
+For each attack burst, compares the online TracebackObserver's fully-resolved
+chain (from traceback_*.jsonl) against the oracle's true chain (from
+oracle_*.jsonl, used here only for scoring) and reports, as mean +/- 95% CI
+across seeds:
+  - trace success rate (did the chain reach the true origin, correctly, within
+    the live window?)
+  - hops reached within the live window (for every burst, success or not --
+    a burst that fails to reach the origin is recorded as a negative
+    observation with however many hops it did confirm, not discarded)
+  - time-to-trace (successful traces only): how much of the live window was
+    spent completing the traceback
+
+Usage matches evaluate_phase1.py; see that file's docstring.
+"""
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict
+from pathlib import Path
+
+from common import load_run, mean_ci95
+
+
+def evaluate_run(run):
+    by_trace = defaultdict(list)
+    for rec in run.traceback:
+        by_trace[rec["trace_id"]].append(rec)
+
+    # Match each oracle burst to the trace whose burst_detect_time_s is
+    # closest to the burst's start_time_s (the observer has no burst_id --
+    # it never sees the oracle -- so time proximity is how evaluation lines
+    # them up after the fact).
+    traces_by_detect_time = []
+    for trace_id, recs in by_trace.items():
+        recs.sort(key=lambda r: r["hops_so_far"])
+        traces_by_detect_time.append((recs[0]["burst_detect_time_s"], recs))
+
+    successes = []       # 1/0 per burst
+    hops_reached = []    # per burst, regardless of success
+    time_to_trace = []   # successful bursts only
+
+    for burst in run.oracle_bursts:
+        start = burst["start_time_s"]
+        expected = list(reversed(burst["true_chain"]))  # victim-first order
+
+        best = min(traces_by_detect_time, key=lambda t: abs(t[0] - start), default=None)
+        if best is None or abs(best[0] - start) > 2.0:
+            continue
+        recs = best[1]
+        final = recs[-1]
+        chain = final["chain_so_far"]
+
+        hops_reached.append(len(chain) - 1)
+
+        success = chain == expected
+        successes.append(1 if success else 0)
+        if success:
+            time_to_trace.append(final["eval_time_s"] - start)
+
+    return successes, hops_reached, time_to_trace
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--results-dir", type=Path, required=True)
+    ap.add_argument("--n", type=int, required=True)
+    ap.add_argument("--seeds", type=int, nargs="+", required=True)
+    cfg = ap.parse_args()
+
+    per_seed_success_rate = []
+    per_seed_mean_hops = []
+    all_time_to_trace = []
+    total_bursts = 0
+
+    for seed in cfg.seeds:
+        run = load_run(cfg.results_dir, seed, cfg.n)
+        successes, hops, ttt = evaluate_run(run)
+        if successes:
+            per_seed_success_rate.append(sum(successes) / len(successes))
+        if hops:
+            per_seed_mean_hops.append(sum(hops) / len(hops))
+        all_time_to_trace += ttt
+        total_bursts += len(successes)
+
+    succ_mean, succ_ci, succ_n = mean_ci95(per_seed_success_rate)
+    hops_mean, hops_ci, hops_n = mean_ci95(per_seed_mean_hops)
+    ttt_mean, ttt_ci, ttt_n = mean_ci95(all_time_to_trace)
+
+    print(f"seeds evaluated: {len(cfg.seeds)}  n={cfg.n}  total bursts: {total_bursts}")
+    print(f"trace success rate (reached true origin, per-seed mean +/- 95% CI): {succ_mean:.3f} +/- {succ_ci:.3f}  (seeds={succ_n})")
+    print(f"hops reached within live window (per-seed mean +/- 95% CI): {hops_mean:.3f} +/- {hops_ci:.3f}  (seeds={hops_n})")
+    print(f"time-to-trace, successful only (mean +/- 95% CI): {ttt_mean:.3f}s +/- {ttt_ci:.3f}s  (n={ttt_n})")
+
+
+if __name__ == "__main__":
+    main()
