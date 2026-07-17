@@ -1,11 +1,12 @@
-// LiveTrace Phase 0 simulation driver.
+// LiveTrace simulation driver.
 //
 // Builds a random relay mesh, runs one moving-origin periodic attacker
 // (stepping-stone chains) plus ordinary background traffic against a fixed
 // victim, with ground truth recorded only to the oracle log and observable
-// traffic recorded only to the observation log. No correlation/traceback
-// runs yet (added in later phases) -- this is the "correlation OFF" sanity
-// build called for at the end of Phase 0.
+// traffic recorded only to the observation log. When correlation.enabled is
+// true (default from Phase 1 on), an online TracebackObserver attempts
+// hop-by-hop traceback from every new flow arriving at the victim, using
+// only ObservationLog + the public node/address map -- never the oracle.
 
 #include "ns3/animation-interface.h"
 #include "ns3/attacker-campaign.h"
@@ -15,12 +16,16 @@
 #include "ns3/livetrace-config.h"
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
+#include "ns3/node-address-index.h"
 #include "ns3/observation-log.h"
 #include "ns3/oracle-logger.h"
 #include "ns3/random-mesh-topology.h"
 #include "ns3/stepstone-relay-app.h"
+#include "ns3/timing-correlator.h"
+#include "ns3/traceback-observer.h"
 
 #include <cmath>
+#include <fstream>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -97,6 +102,8 @@ main(int argc, char* argv[])
     std::string oraclePath = outDir + "/oracle_" + tag + ".jsonl";
     std::string observedPath = outDir + "/observed_" + tag + ".jsonl";
     std::string netanimPath = outDir + "/netanim_" + tag + ".xml";
+    std::string topologyMapPath = outDir + "/topology_" + tag + ".jsonl";
+    std::string tracebackPath = outDir + "/traceback_" + tag + ".jsonl";
 
     OracleLogger oracle(oraclePath);
     ObservationLog obsLog(observedPath);
@@ -111,11 +118,30 @@ main(int argc, char* argv[])
 
     LayoutNodesOnCircle(nodes);
 
+    // nodeAddresses[i] is "an" address to dial node i (interface 1 is enough
+    // to be reachable via global routing); addrIndex, in contrast, must map
+    // *every* address a node owns back to it, because a node with several
+    // edges (several interfaces) can send or receive on any of them
+    // depending on the route a given packet takes.
     std::vector<Ipv4Address> nodeAddresses(nodes.GetN());
-    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    NodeAddressIndex addrIndex; // public address book (not ground truth): built from
+                                // interface assignment, same as a real host inventory.
     {
-        Ptr<Ipv4> ipv4 = nodes.Get(i)->GetObject<Ipv4>();
-        nodeAddresses[i] = (ipv4 && ipv4->GetNInterfaces() > 1) ? ipv4->GetAddress(1, 0).GetLocal() : Ipv4Address();
+        std::ofstream topoOut(topologyMapPath);
+        for (uint32_t i = 0; i < nodes.GetN(); ++i)
+        {
+            Ptr<Ipv4> ipv4 = nodes.Get(i)->GetObject<Ipv4>();
+            uint32_t nIfaces = ipv4 ? ipv4->GetNInterfaces() : 0;
+            nodeAddresses[i] = (nIfaces > 1) ? ipv4->GetAddress(1, 0).GetLocal() : Ipv4Address();
+            for (uint32_t ifIdx = 1; ifIdx < nIfaces; ++ifIdx)
+            {
+                Ipv4Address addr = ipv4->GetAddress(ifIdx, 0).GetLocal();
+                addrIndex.Register(addr, i);
+                std::ostringstream addrStr;
+                addr.Print(addrStr);
+                topoOut << "{\"node_id\":" << i << ",\"address\":\"" << addrStr.str() << "\"}" << std::endl;
+            }
+        }
     }
 
     // Victim's well-known service listener: the endpoint the attacker chain
@@ -125,6 +151,27 @@ main(int argc, char* argv[])
     nodes.Get(victimNodeId)->AddApplication(victimSink);
     victimSink->SetStartTime(Seconds(0.0));
     victimSink->SetStopTime(Seconds(stopTimeS));
+
+    TimingCorrelator::Config corrCfg;
+    corrCfg.bucketS = cfg.GetDouble("correlation.bucket_s", 0.05);
+    corrCfg.onThresholdPps = cfg.GetDouble("correlation.on_threshold_pps", 1.0);
+    corrCfg.minOnOffTransitions = static_cast<uint32_t>(cfg.GetInt("correlation.min_on_off_transitions", 3));
+    corrCfg.maxLagBuckets = cfg.GetInt("correlation.max_lag_buckets", 3);
+    TimingCorrelator correlator(&obsLog, corrCfg);
+
+    TracebackObserver::Config obsCfg;
+    obsCfg.liveWindowS = cfg.GetDouble("window.live_window_s", 5.0);
+    obsCfg.accumulationDelayS = cfg.GetDouble("traceback.accumulation_delay_s", 1.0);
+    obsCfg.maxHops = static_cast<uint32_t>(cfg.GetInt("traceback.max_hops", 1));
+    obsCfg.scoreThreshold = cfg.GetDouble("correlation.score_threshold", 0.5);
+    TracebackObserver observer(&obsLog, &addrIndex, &correlator, victimNodeId, obsCfg, tracebackPath);
+
+    if (cfg.GetBool("correlation.enabled", true))
+    {
+        victimSink->SetRecvNotify([&observer](uint32_t nodeId, std::string flowKey, double t, Ipv4Address peer) {
+            observer.OnFlowObserved(nodeId, flowKey, t, peer);
+        });
+    }
 
     // Background traffic (ordinary noise, no ground truth).
     BackgroundTraffic::Config bgCfg;
@@ -169,6 +216,7 @@ main(int argc, char* argv[])
     Simulator::Destroy();
 
     std::cout << "[LiveTrace] run complete: tag=" << tag << " oracle=" << oraclePath << " observed=" << observedPath
-              << " netanim=" << netanimPath << std::endl;
+              << " traceback=" << tracebackPath << " topology=" << topologyMapPath << " netanim=" << netanimPath
+              << std::endl;
     return 0;
 }

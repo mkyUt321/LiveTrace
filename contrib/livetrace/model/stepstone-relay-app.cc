@@ -61,6 +61,12 @@ StepstoneRelayApp::~StepstoneRelayApp()
 }
 
 void
+StepstoneRelayApp::SetRecvNotify(RecvNotifyFn fn)
+{
+    m_recvNotify = fn;
+}
+
+void
 StepstoneRelayApp::Setup(uint16_t localPort,
                           ObservationLog* obsLog,
                           uint32_t nodeId,
@@ -127,10 +133,15 @@ StepstoneRelayApp::HandleRead(Ptr<Socket> socket)
         Ipv4Address peerAddr = peer.GetIpv4();
         uint16_t peerPort = peer.GetPort();
 
+        std::string flowKeyIn = MakeFlowKey(peerAddr, peerPort, GetNodeIpv4Address(GetNode()), m_localPort);
+        double now = Simulator::Now().GetSeconds();
         if (m_obsLog)
         {
-            std::string flowKeyIn = MakeFlowKey(peerAddr, peerPort, GetNodeIpv4Address(GetNode()), m_localPort);
-            m_obsLog->RecordRecv(m_nodeId, flowKeyIn, Simulator::Now().GetSeconds(), packet->GetSize());
+            m_obsLog->RecordRecv(m_nodeId, flowKeyIn, now, packet->GetSize());
+        }
+        if (m_recvNotify)
+        {
+            m_recvNotify(m_nodeId, flowKeyIn, now, peerAddr);
         }
 
         if (!m_isTerminal)
