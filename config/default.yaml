@@ -1,0 +1,52 @@
+# LiveTrace default configuration.
+# Valid YAML (parseable by PyYAML on the analysis side); the C++ side uses a
+# restricted-subset parser (contrib/livetrace/helper/config-loader.*) that only
+# understands flat scalars and two levels of nesting, so keep this file within
+# that shape when editing.
+
+seed: 1
+num_seeds: 20
+
+topology:
+  model: erdos_renyi   # fixed generator model for the whole project; see docs/summaries for rationale
+  n: 50                # node count (primary scale axis; swept in Phase 4)
+  p: 0.12               # edge probability
+  max_regen_attempts: 50 # resample if disconnected
+
+attacker:
+  count: 1              # single moving-origin attacker per the project spec; the
+                         # re-id engine still discovers this via clustering, it is
+                         # not told count in advance. Code supports >1 for future use.
+  period_s: 420.0
+  burst_s: 5.0
+  chain_length_min: 2
+  chain_length_max: 5
+  packets_per_burst: 40
+
+background:
+  enabled: true
+  rate_pps: 4.0
+  packet_size_bytes: 512
+
+window:
+  live_window_s: 5.0    # the live traceback window central to the project
+
+correlation:
+  method: zhang_paxson
+  on_threshold_pps: 1.0  # rate above which an interval counts as ON
+  bucket_s: 0.05         # ON/OFF bucketing resolution
+  min_on_off_transitions: 3
+  score_threshold: 0.5
+
+reidentification:
+  periodicity_tolerance_s: 5.0
+  fingerprint_weight: 0.15
+  timing_weight: 0.45
+  periodicity_weight: 0.40
+
+sim:
+  stop_time_s: 900.0     # a bit over 2 attack periods for small-N sanity runs
+
+sweep:
+  n_values: [20, 40, 80, 160, 320]
+  seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]

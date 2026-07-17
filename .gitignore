@@ -1,0 +1,11 @@
+results/*.jsonl
+results/*.log
+results/*.xml
+results/*.csv
+results/*.png
+!results/.gitkeep
+__pycache__/
+*.pyc
+.vscode/
+*.o
+*.obj
