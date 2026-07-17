@@ -161,8 +161,9 @@ main(int argc, char* argv[])
 
     TracebackObserver::Config obsCfg;
     obsCfg.liveWindowS = cfg.GetDouble("window.live_window_s", 5.0);
-    obsCfg.accumulationDelayS = cfg.GetDouble("traceback.accumulation_delay_s", 1.0);
-    obsCfg.maxHops = static_cast<uint32_t>(cfg.GetInt("traceback.max_hops", 1));
+    obsCfg.accumulationDelayS = cfg.GetDouble("traceback.accumulation_delay_s", 2.0);
+    obsCfg.hopDelayS = cfg.GetDouble("traceback.hop_delay_s", 0.6);
+    obsCfg.maxHops = static_cast<uint32_t>(cfg.GetInt("traceback.max_hops", 10));
     obsCfg.scoreThreshold = cfg.GetDouble("correlation.score_threshold", 0.5);
     TracebackObserver observer(&obsLog, &addrIndex, &correlator, victimNodeId, obsCfg, tracebackPath);
 
