@@ -54,6 +54,18 @@ AttackerCampaign::AttackerCampaign(NodeContainer nodes,
       m_rng(rngSeed),
       m_stopTimeS(stopTimeS)
 {
+    std::vector<uint32_t> candidates;
+    for (uint32_t i = 0; i < m_nodes.GetN(); ++i)
+    {
+        if (i != m_victimNodeId)
+        {
+            candidates.push_back(i);
+        }
+    }
+    std::shuffle(candidates.begin(), candidates.end(), m_rng);
+    double fraction = (m_cfg.relayPoolFraction > 0.0) ? m_cfg.relayPoolFraction : 1.0;
+    uint32_t poolSize = std::max<uint32_t>(1, static_cast<uint32_t>(candidates.size() * fraction));
+    m_relayPool.assign(candidates.begin(), candidates.begin() + std::min<size_t>(poolSize, candidates.size()));
 }
 
 void
@@ -81,26 +93,29 @@ AttackerCampaign::FireBurst()
         origin = nodePick(m_rng);
     } while (origin == m_victimNodeId);
 
-    // Pick a fresh random chain of k distinct relays (never origin or victim).
+    // Pick a fresh random chain of k distinct relays, drawn from this actor's
+    // own private relay pool (never origin or victim) -- origin itself stays
+    // freely chosen from the whole network every period, per spec.
     std::uniform_int_distribution<uint32_t> kPick(m_cfg.chainLenMin, m_cfg.chainLenMax);
     uint32_t k = kPick(m_rng);
-    k = std::min(k, n >= 2 ? n - 2 : 0); // can't exceed available non-origin/non-victim nodes
+    k = std::min<uint32_t>(k, static_cast<uint32_t>(m_relayPool.size()));
 
     std::vector<uint32_t> chain;
     chain.push_back(origin);
     std::vector<uint32_t> used = {origin, m_victimNodeId};
+    std::uniform_int_distribution<uint32_t> poolPick(0, m_relayPool.empty() ? 0 : m_relayPool.size() - 1);
     for (uint32_t i = 0; i < k; ++i)
     {
         uint32_t relay;
         uint32_t attempts = 0;
         do
         {
-            relay = nodePick(m_rng);
+            relay = m_relayPool[poolPick(m_rng)];
             attempts++;
         } while (std::find(used.begin(), used.end(), relay) != used.end() && attempts < 1000);
         if (attempts >= 1000)
         {
-            break; // network too small for this chain length; take what we have
+            break; // pool too small for this chain length; take what we have
         }
         chain.push_back(relay);
         used.push_back(relay);

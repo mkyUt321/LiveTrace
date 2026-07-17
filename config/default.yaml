@@ -22,6 +22,10 @@ attacker:
   chain_length_min: 2
   chain_length_max: 5
   packets_per_burst: 80
+  relay_pool_fraction: 0.35  # each actor reuses relays only from its own random
+                              # subset of this size -- models semi-persistent
+                              # stepping-stone infrastructure and is what gives
+                              # Phase 3's path-convergence signal real content
 
 background:
   enabled: true
@@ -52,6 +56,7 @@ reidentification:
   fingerprint_weight: 0.15
   timing_weight: 0.45
   periodicity_weight: 0.40
+  cluster_score_threshold: 0.5
 
 sim:
   stop_time_s: 900.0     # a bit over 2 attack periods for small-N sanity runs
