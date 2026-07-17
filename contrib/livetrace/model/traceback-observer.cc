@@ -34,6 +34,12 @@ TracebackObserver::SetTraceCompleteNotify(TraceCompleteFn fn)
 }
 
 void
+TracebackObserver::SetHopConfirmedNotify(HopConfirmedFn fn)
+{
+    m_hopConfirmed = fn;
+}
+
+void
 TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr)
 {
     if (nodeId != m_victimNodeId)
@@ -136,6 +142,10 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
     }
 
     logHop("matched", match.flowKey, match.score);
+    if (m_hopConfirmed)
+    {
+        m_hopConfirmed(traceId, peerNode, hopsSoFar, now);
+    }
 
     // Each further hop costs its own slice of the live window -- this is
     // what makes hop count and time-to-trace a real tradeoff against the

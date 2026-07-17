@@ -49,6 +49,11 @@ class TracebackObserver
     using TraceCompleteFn =
         std::function<void(uint32_t, double, std::vector<uint32_t>, std::string, std::string)>;
 
+    /// traceId, nodeId just confirmed, hopsSoFar, eval time -- fired at every
+    /// successful hop (not just trace completion). Used to drive NetAnim
+    /// node highlighting live as the trace progresses (Phase 5).
+    using HopConfirmedFn = std::function<void(uint32_t, uint32_t, uint32_t, double)>;
+
     TracebackObserver(ObservationLog* obsLog,
                        NodeAddressIndex* addrIndex,
                        TimingCorrelator* correlator,
@@ -62,6 +67,9 @@ class TracebackObserver
     /// Fired once per trace when it stops for any reason (used by
     /// ReidentificationEngine to consume each finished traceback).
     void SetTraceCompleteNotify(TraceCompleteFn fn);
+
+    /// Fired on every confirmed hop, as it happens.
+    void SetHopConfirmedNotify(HopConfirmedFn fn);
 
   private:
     void AttemptTrace(uint32_t traceId,
@@ -80,6 +88,7 @@ class TracebackObserver
     std::set<std::string> m_seenAtVictim;
     uint32_t m_nextTraceId;
     TraceCompleteFn m_traceComplete;
+    HopConfirmedFn m_hopConfirmed;
 };
 
 } // namespace livetrace
