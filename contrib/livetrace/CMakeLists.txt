@@ -1,0 +1,30 @@
+build_lib(
+    LIBNAME livetrace
+    SOURCE_FILES
+    model/random-mesh-topology.cc
+    model/oracle-logger.cc
+    model/observation-log.cc
+    model/node-address-index.cc
+    model/stepstone-relay-app.cc
+    model/attacker-campaign.cc
+    model/background-traffic.cc
+    helper/livetrace-config.cc
+    HEADER_FILES
+    model/random-mesh-topology.h
+    model/oracle-logger.h
+    model/observation-log.h
+    model/node-address-index.h
+    model/flow-key-util.h
+    model/stepstone-relay-app.h
+    model/attacker-campaign.h
+    model/background-traffic.h
+    helper/livetrace-config.h
+    TEST_SOURCES
+    test/livetrace-test-suite.cc
+    LIBRARIES_TO_LINK
+    ${libcore}
+    ${libnetwork}
+    ${libinternet}
+    ${libpoint-to-point}
+    ${libapplications}
+)
