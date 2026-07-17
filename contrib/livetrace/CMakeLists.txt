@@ -8,6 +8,8 @@ build_lib(
     model/stepstone-relay-app.cc
     model/attacker-campaign.cc
     model/background-traffic.cc
+    model/timing-correlator.cc
+    model/traceback-observer.cc
     helper/livetrace-config.cc
     HEADER_FILES
     model/random-mesh-topology.h
@@ -18,6 +20,8 @@ build_lib(
     model/stepstone-relay-app.h
     model/attacker-campaign.h
     model/background-traffic.h
+    model/timing-correlator.h
+    model/traceback-observer.h
     helper/livetrace-config.h
     TEST_SOURCES
     test/livetrace-test-suite.cc

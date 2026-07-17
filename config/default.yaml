@@ -21,7 +21,7 @@ attacker:
   burst_s: 5.0
   chain_length_min: 2
   chain_length_max: 5
-  packets_per_burst: 40
+  packets_per_burst: 80
 
 background:
   enabled: true
@@ -32,11 +32,17 @@ window:
   live_window_s: 5.0    # the live traceback window central to the project
 
 correlation:
+  enabled: true
   method: zhang_paxson
   on_threshold_pps: 1.0  # rate above which an interval counts as ON
   bucket_s: 0.05         # ON/OFF bucketing resolution
   min_on_off_transitions: 3
   score_threshold: 0.5
+  max_lag_buckets: 3     # small-misalignment search window (relay delay/jitter)
+
+traceback:
+  accumulation_delay_s: 2.0  # let this much of the burst accumulate before correlating
+  max_hops: 1                 # Phase 1: single hop only; Phase 2 raises this / makes it window-bounded
 
 reidentification:
   periodicity_tolerance_s: 5.0
