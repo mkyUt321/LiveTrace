@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -42,6 +43,12 @@ class TracebackObserver
         double scoreThreshold;
     };
 
+    /// traceId, burstDetectTimeS, finalChain (victim-first), stopReason,
+    /// hop0FlowKey (the victim-inbound flow that seeded this trace -- the
+    /// most directly cross-burst-comparable signal for re-identification).
+    using TraceCompleteFn =
+        std::function<void(uint32_t, double, std::vector<uint32_t>, std::string, std::string)>;
+
     TracebackObserver(ObservationLog* obsLog,
                        NodeAddressIndex* addrIndex,
                        TimingCorrelator* correlator,
@@ -52,8 +59,13 @@ class TracebackObserver
     /// Hook this to the victim sink's StepstoneRelayApp::SetRecvNotify.
     void OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr);
 
+    /// Fired once per trace when it stops for any reason (used by
+    /// ReidentificationEngine to consume each finished traceback).
+    void SetTraceCompleteNotify(TraceCompleteFn fn);
+
   private:
     void AttemptTrace(uint32_t traceId,
+                       std::string hop0FlowKey,
                        std::string confirmedFlowKey,
                        double burstDetectTimeS,
                        uint32_t hopsSoFar,
@@ -67,6 +79,7 @@ class TracebackObserver
     std::ofstream m_out;
     std::set<std::string> m_seenAtVictim;
     uint32_t m_nextTraceId;
+    TraceCompleteFn m_traceComplete;
 };
 
 } // namespace livetrace

@@ -20,6 +20,7 @@
 #include "ns3/observation-log.h"
 #include "ns3/oracle-logger.h"
 #include "ns3/random-mesh-topology.h"
+#include "ns3/reidentification-engine.h"
 #include "ns3/stepstone-relay-app.h"
 #include "ns3/timing-correlator.h"
 #include "ns3/traceback-observer.h"
@@ -104,6 +105,7 @@ main(int argc, char* argv[])
     std::string netanimPath = outDir + "/netanim_" + tag + ".xml";
     std::string topologyMapPath = outDir + "/topology_" + tag + ".jsonl";
     std::string tracebackPath = outDir + "/traceback_" + tag + ".jsonl";
+    std::string reidPath = outDir + "/reid_" + tag + ".jsonl";
 
     OracleLogger oracle(oraclePath);
     ObservationLog obsLog(observedPath);
@@ -167,10 +169,24 @@ main(int argc, char* argv[])
     obsCfg.scoreThreshold = cfg.GetDouble("correlation.score_threshold", 0.5);
     TracebackObserver observer(&obsLog, &addrIndex, &correlator, victimNodeId, obsCfg, tracebackPath);
 
+    ReidentificationEngine::Config reidCfg;
+    reidCfg.periodPriorS = cfg.GetDouble("attacker.period_s", 420.0);
+    reidCfg.periodicityToleranceS = cfg.GetDouble("reidentification.periodicity_tolerance_s", 5.0);
+    reidCfg.evidenceWindowS = cfg.GetDouble("traceback.accumulation_delay_s", 2.0);
+    reidCfg.periodicityWeight = cfg.GetDouble("reidentification.periodicity_weight", 0.40);
+    reidCfg.timingWeight = cfg.GetDouble("reidentification.timing_weight", 0.45);
+    reidCfg.fingerprintWeight = cfg.GetDouble("reidentification.fingerprint_weight", 0.15);
+    reidCfg.clusterScoreThreshold = cfg.GetDouble("reidentification.cluster_score_threshold", 0.55);
+    ReidentificationEngine reid(&obsLog, &correlator, reidCfg, reidPath);
+
     if (cfg.GetBool("correlation.enabled", true))
     {
         victimSink->SetRecvNotify([&observer](uint32_t nodeId, std::string flowKey, double t, Ipv4Address peer) {
             observer.OnFlowObserved(nodeId, flowKey, t, peer);
+        });
+        observer.SetTraceCompleteNotify([&reid](uint32_t traceId, double detectTimeS, std::vector<uint32_t> chain,
+                                                 std::string stopReason, std::string hop0FlowKey) {
+            reid.OnTraceComplete(traceId, detectTimeS, chain, stopReason, hop0FlowKey);
         });
     }
 
@@ -200,8 +216,9 @@ main(int argc, char* argv[])
         acfg.burstS = cfg.GetDouble("attacker.burst_s", 5.0);
         acfg.chainLenMin = static_cast<uint32_t>(cfg.GetInt("attacker.chain_length_min", 2));
         acfg.chainLenMax = static_cast<uint32_t>(cfg.GetInt("attacker.chain_length_max", 5));
-        acfg.packetsPerBurst = static_cast<uint32_t>(cfg.GetInt("attacker.packets_per_burst", 40));
+        acfg.packetsPerBurst = static_cast<uint32_t>(cfg.GetInt("attacker.packets_per_burst", 80));
         acfg.packetSizeBytes = static_cast<uint32_t>(cfg.GetInt("background.packet_size_bytes", 512));
+        acfg.relayPoolFraction = cfg.GetDouble("attacker.relay_pool_fraction", 0.35);
 
         auto campaign = std::make_unique<AttackerCampaign>(nodes, victimNodeId, kVictimPort, nodeAddresses, &obsLog,
                                                              &oracle, acfg, seed * 1000 + 100 + a, stopTimeS);
@@ -217,7 +234,7 @@ main(int argc, char* argv[])
     Simulator::Destroy();
 
     std::cout << "[LiveTrace] run complete: tag=" << tag << " oracle=" << oraclePath << " observed=" << observedPath
-              << " traceback=" << tracebackPath << " topology=" << topologyMapPath << " netanim=" << netanimPath
-              << std::endl;
+              << " traceback=" << tracebackPath << " reid=" << reidPath << " topology=" << topologyMapPath
+              << " netanim=" << netanimPath << std::endl;
     return 0;
 }

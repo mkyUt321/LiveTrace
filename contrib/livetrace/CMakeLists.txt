@@ -10,6 +10,7 @@ build_lib(
     model/background-traffic.cc
     model/timing-correlator.cc
     model/traceback-observer.cc
+    model/reidentification-engine.cc
     helper/livetrace-config.cc
     HEADER_FILES
     model/random-mesh-topology.h
@@ -22,6 +23,7 @@ build_lib(
     model/background-traffic.h
     model/timing-correlator.h
     model/traceback-observer.h
+    model/reidentification-engine.h
     helper/livetrace-config.h
     TEST_SOURCES
     test/livetrace-test-suite.cc

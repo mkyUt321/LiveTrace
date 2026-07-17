@@ -28,6 +28,12 @@ TracebackObserver::TracebackObserver(ObservationLog* obsLog,
 }
 
 void
+TracebackObserver::SetTraceCompleteNotify(TraceCompleteFn fn)
+{
+    m_traceComplete = fn;
+}
+
+void
 TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr)
 {
     if (nodeId != m_victimNodeId)
@@ -46,6 +52,7 @@ TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double t
                          this,
                          traceId,
                          flowKey,
+                         flowKey,
                          timeS,
                          0u,
                          std::vector<uint32_t>{m_victimNodeId});
@@ -53,6 +60,7 @@ TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double t
 
 void
 TracebackObserver::AttemptTrace(uint32_t traceId,
+                                 std::string hop0FlowKey,
                                  std::string confirmedFlowKey,
                                  double burstDetectTimeS,
                                  uint32_t hopsSoFar,
@@ -60,7 +68,7 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
 {
     double now = Simulator::Now().GetSeconds();
 
-    auto writeResult = [&](const std::string& stopReason, const std::string& matchedFlow, double score) {
+    auto logHop = [&](const std::string& stopReason, const std::string& matchedFlow, double score) {
         m_out << "{\"trace_id\":" << traceId << ",\"burst_detect_time_s\":" << burstDetectTimeS
               << ",\"hops_so_far\":" << hopsSoFar << ",\"chain_so_far\":[";
         for (size_t i = 0; i < chainSoFar.size(); ++i)
@@ -74,12 +82,19 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
         m_out << "],\"stop_reason\":\"" << stopReason << "\",\"matched_flow\":\"" << matchedFlow
               << "\",\"score\":" << score << ",\"eval_time_s\":" << now << "}" << std::endl;
     };
+    auto finish = [&](const std::string& stopReason, const std::string& matchedFlow, double score) {
+        logHop(stopReason, matchedFlow, score);
+        if (m_traceComplete)
+        {
+            m_traceComplete(traceId, burstDetectTimeS, chainSoFar, stopReason, hop0FlowKey);
+        }
+    };
 
     Ipv4Address peerAddr = FlowKeySideAddr(confirmedFlowKey, /*wantSrc=*/true);
     uint32_t peerNode = m_addrIndex->Lookup(peerAddr);
     if (peerNode == NodeAddressIndex::kNotFound)
     {
-        writeResult("unknown_peer_address", "", -1.0);
+        finish("unknown_peer_address", "", -1.0);
         return;
     }
 
@@ -89,7 +104,7 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
         // node; stop rather than spin. Recorded as its own outcome since a
         // real observer has no other way to detect this than a repeat visit.
         chainSoFar.push_back(peerNode);
-        writeResult("cycle_detected", "", -1.0);
+        finish("cycle_detected", "", -1.0);
         return;
     }
     chainSoFar.push_back(peerNode);
@@ -97,12 +112,12 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
     double deadline = burstDetectTimeS + m_cfg.liveWindowS;
     if (now > deadline)
     {
-        writeResult("window_expired", "", -1.0);
+        finish("window_expired", "", -1.0);
         return;
     }
     if (hopsSoFar >= m_cfg.maxHops)
     {
-        writeResult("hop_limit_reached", "", -1.0);
+        finish("hop_limit_reached", "", -1.0);
         return;
     }
 
@@ -116,11 +131,11 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
         // which never has an inbound flow to find) or the trail was lost;
         // both are legitimate, recorded outcomes -- evaluation (with oracle
         // access) is what tells them apart after the fact.
-        writeResult("no_match_above_threshold", match.flowKey, match.score);
+        finish("no_match_above_threshold", match.flowKey, match.score);
         return;
     }
 
-    writeResult("matched", match.flowKey, match.score);
+    logHop("matched", match.flowKey, match.score);
 
     // Each further hop costs its own slice of the live window -- this is
     // what makes hop count and time-to-trace a real tradeoff against the
@@ -130,6 +145,7 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
                          &TracebackObserver::AttemptTrace,
                          this,
                          traceId,
+                         hop0FlowKey,
                          match.flowKey,
                          burstDetectTimeS,
                          hopsSoFar + 1,
