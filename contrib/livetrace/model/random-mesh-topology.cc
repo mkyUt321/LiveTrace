@@ -2,7 +2,7 @@
 
 #include "ns3/internet-stack-helper.h"
 #include "ns3/ipv4-address-helper.h"
-#include "ns3/ipv4-global-routing-helper.h"
+#include "ns3/nix-vector-helper.h"
 #include "ns3/point-to-point-helper.h"
 #include "ns3/string.h"
 
@@ -287,7 +287,15 @@ RandomMeshTopology::Build()
     result.nodesDroppedForConnectivity = droppedNodes;
     result.victimNodeId = 0;
 
+    // Nix-vector routing computes routes on demand (and caches them) instead
+    // of precomputing an all-pairs table up front like
+    // Ipv4GlobalRoutingHelper -- which is well known not to scale past a few
+    // hundred nodes. Empirically, global routing took >5 minutes of setup
+    // alone at N=160 in this project's dense mesh; nix-vector is what makes
+    // the N=320 cell of the scale sweep tractable at all.
+    Ipv4NixVectorHelper nixRouting;
     InternetStackHelper stack;
+    stack.SetRoutingHelper(nixRouting);
     stack.Install(result.nodes);
 
     PointToPointHelper p2p;
@@ -301,8 +309,6 @@ RandomMeshTopology::Build()
         address.SetBase(SubnetBaseForEdge(i), Ipv4Mask("255.255.255.252"));
         address.Assign(devs);
     }
-
-    Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
     std::ostringstream note;
     note << "topology=erdos_renyi n=" << n << " p=" << m_p << " edges=" << edges.size()

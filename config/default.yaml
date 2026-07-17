@@ -29,7 +29,11 @@ attacker:
 
 background:
   enabled: true
-  rate_pps: 4.0
+  rate_pps: 0.05          # PER NODE; driver multiplies by N so ambient density
+                           # per node stays roughly constant across the N sweep.
+                           # Kept small because it's an arrival rate of new
+                           # *sessions* (each several packets), and aggregate
+                           # rate otherwise grows uncomfortably large by N=320.
   packet_size_bytes: 512
 
 window:
@@ -63,4 +67,6 @@ sim:
 
 sweep:
   n_values: [20, 40, 80, 160, 320]
-  seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  seeds: [1, 2, 3, 4, 5]  # reduced from 10 after measuring wall-clock cost per
+                           # cell (N=320 ~7.5min/seed even with nix-vector
+                           # routing); see docs/summaries/phase4 for the tradeoff
