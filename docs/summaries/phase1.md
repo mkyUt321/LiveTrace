@@ -1,4 +1,4 @@
-# Phase 1 サマリ(Notion 転記用)
+# Phase 1 サマリ
 
 - **日付**: 2026-07-18
 - **目的**: Zhang–Paxson 型 ON/OFF タイミング相関で、victim への到達フローから直上流 1 ホップを
