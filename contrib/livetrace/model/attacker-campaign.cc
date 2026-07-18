@@ -8,6 +8,7 @@
 #include "ns3/udp-socket-factory.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace ns3
 {
@@ -68,6 +69,17 @@ AttackerCampaign::AttackerCampaign(NodeContainer nodes,
     m_relayPool.assign(candidates.begin(), candidates.begin() + std::min<size_t>(poolSize, candidates.size()));
 }
 
+uint32_t
+AttackerCampaign::ComputeChainLengthTarget(uint32_t chainLenMin,
+                                            uint32_t chainLenAbsoluteCap,
+                                            double chainLengthFactor,
+                                            uint32_t diameter)
+{
+    uint32_t target =
+        std::max<uint32_t>(chainLenMin, static_cast<uint32_t>(std::lround(chainLengthFactor * diameter)));
+    return std::min(target, chainLenAbsoluteCap);
+}
+
 void
 AttackerCampaign::Start()
 {
@@ -95,9 +107,18 @@ AttackerCampaign::FireBurst()
 
     // Pick a fresh random chain of k distinct relays, drawn from this actor's
     // own private relay pool (never origin or victim) -- origin itself stays
-    // freely chosen from the whole network every period, per spec.
-    std::uniform_int_distribution<uint32_t> kPick(m_cfg.chainLenMin, m_cfg.chainLenMax);
-    uint32_t k = kPick(m_rng);
+    // freely chosen from the whole network every period, per spec. Chain
+    // length is tied to the measured mesh diameter (chainLengthFactor *
+    // diameter, +/-1 jitter) rather than a fixed constant -- this is what
+    // makes the traceback problem's depth actually grow with N (see
+    // docs/summaries/phase6 for why a fixed range decoupled difficulty from
+    // network size entirely).
+    uint32_t target = ComputeChainLengthTarget(m_cfg.chainLenMin, m_cfg.chainLenAbsoluteCap,
+                                                m_cfg.chainLengthFactor, m_cfg.diameter);
+    std::uniform_int_distribution<int> jitterPick(-1, 1);
+    int jittered = static_cast<int>(target) + jitterPick(m_rng);
+    uint32_t k = static_cast<uint32_t>(
+        std::clamp(jittered, static_cast<int>(m_cfg.chainLenMin), static_cast<int>(m_cfg.chainLenAbsoluteCap)));
     k = std::min<uint32_t>(k, static_cast<uint32_t>(m_relayPool.size()));
 
     std::vector<uint32_t> chain;

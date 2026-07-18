@@ -8,7 +8,23 @@ for scoring) using pairwise precision/recall over all burst pairs in a run:
               are truly the same actor
   recall    = of burst pairs that are truly the same actor, how many did the
               system put in the same cluster
-Reported as mean +/- 95% CI across seeds.
+Reported as a pooled Wilson binomial 95% CI over all pairs across all seeds
+(not a mean +/- CI across per-seed pair-precision/recall averages, which is
+both a small-sample-size problem and, more importantly, degenerate:
+
+IMPORTANT: with only one true actor (attacker.count: 1, e.g. the project's
+own default.yaml), every burst pair is trivially "same true actor", so no
+false positive can ever be counted and precision is EXACTLY 1.0 regardless
+of clustering quality -- it is not a meaningful score for the online
+re-identification behavior in that configuration. This function still
+computes it (so a single-actor run's output is self-consistent to
+inspect), but callers evaluating clustering *quality* should use a
+multi-actor config (config/phase3_reid_test.yaml) where cross-actor
+confusion is actually possible, and treat single-actor precision as N/A.
+
+A burst the online system produced no reid record for at all counts as a
+failure to co-cluster (all its true-actor pairs become recall misses), not
+a dropped denominator entry.
 """
 from __future__ import annotations
 
@@ -16,23 +32,31 @@ import argparse
 from itertools import combinations
 from pathlib import Path
 
-from common import load_run, mean_ci95
+from common import load_run, wilson_ci
 
 
 def evaluate_run(run):
     # Match each oracle burst to the nearest reid record by detection time.
-    labeled = []  # (true_actor_id, assigned_cluster_id)
+    # A burst with no matching reid record still gets an entry -- with
+    # assigned_cluster_id=None, a sentinel that can never equal any real
+    # cluster id, so it correctly contributes recall misses for every
+    # same-actor pair it's part of instead of being silently dropped.
+    labeled = []  # (true_actor_id, assigned_cluster_id or None)
     for burst in run.oracle_bursts:
         start = burst["start_time_s"]
         best = min(run.reid, key=lambda r: abs(r["detect_time_s"] - start), default=None)
         if best is None or abs(best["detect_time_s"] - start) > 2.0:
+            labeled.append((burst["true_actor_id"], None))
             continue
         labeled.append((burst["true_actor_id"], best["assigned_cluster_id"]))
 
     tp = fp = fn = 0
     for (true_a, pred_a), (true_b, pred_b) in combinations(labeled, 2):
         same_true = true_a == true_b
-        same_pred = pred_a == pred_b
+        # None (missing reid record) never equals any cluster id, including
+        # another None -- two non-responses are not evidence the system
+        # co-clustered them.
+        same_pred = pred_a is not None and pred_a == pred_b
         if same_pred and same_true:
             tp += 1
         elif same_pred and not same_true:
@@ -40,9 +64,7 @@ def evaluate_run(run):
         elif same_true and not same_pred:
             fn += 1
 
-    precision = tp / (tp + fp) if (tp + fp) > 0 else float("nan")
-    recall = tp / (tp + fn) if (tp + fn) > 0 else float("nan")
-    return precision, recall, len(labeled)
+    return tp, fp, fn, len(labeled)
 
 
 def main():
@@ -52,23 +74,24 @@ def main():
     ap.add_argument("--seeds", type=int, nargs="+", required=True)
     cfg = ap.parse_args()
 
-    precisions, recalls = [], []
+    total_tp = total_fp = total_fn = 0
     total_bursts = 0
     for seed in cfg.seeds:
         run = load_run(cfg.results_dir, seed, cfg.n)
-        p, r, n_bursts = evaluate_run(run)
-        if p == p:  # not NaN
-            precisions.append(p)
-        if r == r:
-            recalls.append(r)
+        tp, fp, fn, n_bursts = evaluate_run(run)
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
         total_bursts += n_bursts
 
-    p_mean, p_ci, p_n = mean_ci95(precisions)
-    r_mean, r_ci, r_n = mean_ci95(recalls)
+    prec_p, prec_lo, prec_hi, prec_trials = wilson_ci(total_tp, total_tp + total_fp)
+    recall_p, recall_lo, recall_hi, recall_trials = wilson_ci(total_tp, total_tp + total_fn)
 
     print(f"seeds evaluated: {len(cfg.seeds)}  n={cfg.n}  total bursts: {total_bursts}")
-    print(f"pairwise clustering precision (per-seed mean +/- 95% CI): {p_mean:.3f} +/- {p_ci:.3f}  (seeds={p_n})")
-    print(f"pairwise clustering recall (per-seed mean +/- 95% CI): {r_mean:.3f} +/- {r_ci:.3f}  (seeds={r_n})")
+    print(f"pairwise clustering precision (pooled Wilson 95% CI): {prec_p:.3f} [{prec_lo:.3f}, {prec_hi:.3f}]  (pairs={prec_trials})")
+    print(f"pairwise clustering recall (pooled Wilson 95% CI): {recall_p:.3f} [{recall_lo:.3f}, {recall_hi:.3f}]  (pairs={recall_trials})")
+    print("NOTE: precision is only meaningful with >=2 true actors in this run's config "
+          "(with 1 actor it is trivially 1.0 -- see this module's docstring).")
 
 
 if __name__ == "__main__":

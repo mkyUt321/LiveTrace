@@ -9,18 +9,29 @@ num_seeds: 20
 
 topology:
   model: erdos_renyi   # fixed generator model for the whole project; see docs/summaries for rationale
-  n: 50                # node count (primary scale axis; swept in Phase 4)
-  p: 0.12               # edge probability
+  n: 50                # node count (primary scale axis; swept in Phase 4/6)
+  p: 0.12               # edge probability, used only when avg_degree below is 0
+  avg_degree: 8          # PREFERRED over p (see docs/summaries/phase6): derives
+                          # p = avg_degree/(n-1) so mean degree -- and mesh
+                          # diameter, which then grows as ~log N -- stays
+                          # constant across an N sweep instead of the graph
+                          # getting relatively denser (diameter flat) as N grows
+                          # with a fixed p. Set to 0 to fall back to fixed p.
   max_regen_attempts: 50 # resample if disconnected
 
 attacker:
   count: 1              # single moving-origin attacker per the project spec; the
                          # re-id engine still discovers this via clustering, it is
-                         # not told count in advance. Code supports >1 for future use.
+                         # not told count in advance. See config/scale_sweep.yaml
+                         # and config/phase3_reid_test.yaml for multi-actor runs.
   period_s: 420.0
   burst_s: 5.0
-  chain_length_min: 2
-  chain_length_max: 5
+  chain_length_min: 2          # floor, independent of diameter
+  chain_length_absolute_cap: 40 # safety ceiling so a huge diameter can't runaway
+  chain_length_factor: 1.2      # chain length target = round(factor * diameter);
+                                 # this is what makes traceback depth actually grow
+                                 # with N -- see docs/summaries/phase6 for why a
+                                 # fixed [min,max] range decoupled difficulty from N
   packets_per_burst: 80
   relay_pool_fraction: 0.35  # each actor reuses relays only from its own random
                               # subset of this size -- models semi-persistent
@@ -52,8 +63,9 @@ traceback:
   accumulation_delay_s: 2.0  # let this much of the burst accumulate before the first correlation
   hop_delay_s: 0.6            # additional cost paid at each subsequent hop -- this is what makes
                                # hop count trade off against the live window budget
-  max_hops: 10                 # safety cap well above chain_length_max; the live window is the
-                               # real stopping condition in practice
+  max_hops: 40                 # safety cap matching chain_length_absolute_cap; the live window is
+                               # the real stopping condition in practice (see phase6: at large N
+                               # with diameter-scaled chains, the window is expected to bind)
 
 reidentification:
   periodicity_tolerance_s: 5.0

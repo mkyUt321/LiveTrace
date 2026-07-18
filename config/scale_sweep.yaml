@@ -1,0 +1,85 @@
+# Dedicated, committed config for the Phase 6 scale sweep (the project's main
+# result). Differs from config/default.yaml (which stays a single-actor,
+# canonical-period baseline matching the literal spec) in two ways motivated
+# by docs/summaries/phase6:
+#
+#   1. attacker.count: 2 -- a second actor makes reid_precision a meaningful,
+#      non-degenerate metric (with only one true actor, every burst pair is
+#      trivially "same actor" and precision is exactly 1.0 regardless of
+#      clustering quality).
+#   2. attacker.period_s compressed to 60s (with sim.stop_time_s scaled to
+#      match, keeping the period:burst-count ratio the same idea as the
+#      canonical 420s/900s case) -- this is a deliberate time-compression for
+#      statistical power (more bursts per seed => meaningful CIs), not a
+#      change to the attacker model itself. The canonical 420s period is
+#      still exercised by config/default.yaml as a single confirmatory point.
+#
+# topology.avg_degree (not p) is what makes N a real difficulty axis: it
+# holds mean node degree constant across the sweep, so mesh diameter grows
+# with N (~log N) instead of staying flat, and attacker.chain_length_factor
+# ties stepping-stone chain length to that diameter.
+#
+# Usage: tools/run_sweep.sh config/scale_sweep.yaml results
+
+seed: 1
+num_seeds: 10
+
+topology:
+  model: erdos_renyi
+  n: 50
+  p: 0.12
+  avg_degree: 8
+  max_regen_attempts: 50
+
+attacker:
+  count: 2
+  period_s: 60.0
+  burst_s: 5.0
+  chain_length_min: 2
+  chain_length_absolute_cap: 40
+  chain_length_factor: 1.2
+  packets_per_burst: 80
+  relay_pool_fraction: 0.35
+
+background:
+  enabled: true
+  rate_pps: 0.05
+  packet_size_bytes: 512
+
+window:
+  live_window_s: 5.0
+
+correlation:
+  enabled: true
+  method: zhang_paxson
+  on_threshold_pps: 1.0
+  bucket_s: 0.05
+  min_on_off_transitions: 3
+  score_threshold: 0.5
+  max_lag_buckets: 3
+
+traceback:
+  accumulation_delay_s: 2.0
+  hop_delay_s: 0.6
+  max_hops: 40
+
+reidentification:
+  periodicity_tolerance_s: 5.0
+  fingerprint_weight: 0.15
+  timing_weight: 0.45
+  periodicity_weight: 0.40
+  cluster_score_threshold: 0.5
+
+sim:
+  stop_time_s: 1200.0    # 20 periods -> ~20 bursts/actor/seed
+
+# n_values / seeds below are the full declared grid for reference; in
+# practice tools/run_sweep_staged.sh runs N<=320 at the seed count below and
+# N=640 at a reduced seed count (measured ~7-8 min/seed at this config's
+# settings vs ~1s-1min for N<=320, so 8 seeds there would take over an hour).
+# N=1280 was spot-checked once (diameter=6->7, see docs/summaries/phase6) but
+# excluded from the repeated-seed grid: a single seed already took >15
+# minutes even under the lighter config/default.yaml settings.
+sweep:
+  n_values: [20, 40, 80, 160, 320, 640]
+  seeds: [1, 2, 3, 4, 5, 6, 7, 8]
