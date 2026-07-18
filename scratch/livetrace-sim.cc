@@ -85,7 +85,13 @@ main(int argc, char* argv[])
 
     uint32_t seed = seedOverride >= 0 ? static_cast<uint32_t>(seedOverride) : static_cast<uint32_t>(cfg.GetInt("seed", 1));
     uint32_t n = nOverride >= 0 ? static_cast<uint32_t>(nOverride) : static_cast<uint32_t>(cfg.GetInt("topology.n", 50));
-    double p = cfg.GetDouble("topology.p", 0.12);
+    // topology.avg_degree, when set (>0), takes priority over topology.p: it
+    // derives p = avg_degree/(n-1) so mean node degree -- and thus the mesh's
+    // diameter, which grows as ~log N for a fixed degree -- stays constant
+    // across an N sweep instead of the graph getting relatively denser (and
+    // diameter staying flat) as N grows with a fixed p.
+    double avgDegree = cfg.GetDouble("topology.avg_degree", 0.0);
+    double p = avgDegree > 0.0 && n > 1 ? avgDegree / static_cast<double>(n - 1) : cfg.GetDouble("topology.p", 0.12);
     uint32_t maxRegen = static_cast<uint32_t>(cfg.GetInt("topology.max_regen_attempts", 50));
     double stopTimeS = cfg.GetDouble("sim.stop_time_s", 900.0);
 
@@ -228,7 +234,9 @@ main(int argc, char* argv[])
         acfg.phaseOffsetS = phasePick(phaseRng);
         acfg.burstS = cfg.GetDouble("attacker.burst_s", 5.0);
         acfg.chainLenMin = static_cast<uint32_t>(cfg.GetInt("attacker.chain_length_min", 2));
-        acfg.chainLenMax = static_cast<uint32_t>(cfg.GetInt("attacker.chain_length_max", 5));
+        acfg.chainLenAbsoluteCap = static_cast<uint32_t>(cfg.GetInt("attacker.chain_length_absolute_cap", 40));
+        acfg.chainLengthFactor = cfg.GetDouble("attacker.chain_length_factor", 1.2);
+        acfg.diameter = built.diameter;
         acfg.packetsPerBurst = static_cast<uint32_t>(cfg.GetInt("attacker.packets_per_burst", 80));
         acfg.packetSizeBytes = static_cast<uint32_t>(cfg.GetInt("background.packet_size_bytes", 512));
         acfg.relayPoolFraction = cfg.GetDouble("attacker.relay_pool_fraction", 0.35);

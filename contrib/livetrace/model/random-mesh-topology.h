@@ -36,6 +36,8 @@ class RandomMeshTopology
         uint32_t regenAttempts;
         uint32_t articulationPointCount;
         uint32_t nodesDroppedForConnectivity;
+        uint32_t diameter;       // longest shortest-path (in hops) between any two nodes
+        double avgPathLength;    // mean shortest-path length over all connected pairs
         std::string note;
     };
 
@@ -55,6 +57,15 @@ class RandomMeshTopology
                               const std::vector<std::pair<uint32_t, uint32_t>>& edges,
                               uint32_t& artCountOut,
                               uint32_t& worstSecondComponentOut);
+    /// BFS from every node to get all-pairs shortest-path hop counts; returns
+    /// the diameter (max) and mean over all connected ordered pairs. This is
+    /// public topology information (like a network map), not attack ground
+    /// truth -- used to size the attacker's stepping-stone chain length so
+    /// that difficulty actually grows with N (see AttackerCampaign).
+    void ComputePathStats(uint32_t n,
+                           const std::vector<std::pair<uint32_t, uint32_t>>& edges,
+                           uint32_t& diameterOut,
+                           double& avgPathLengthOut);
 
     uint32_t m_n;
     double m_p;

@@ -225,6 +225,62 @@ RandomMeshTopology::AnalyzeArticulation(uint32_t n,
     }
 }
 
+void
+RandomMeshTopology::ComputePathStats(uint32_t n,
+                                      const std::vector<std::pair<uint32_t, uint32_t>>& edges,
+                                      uint32_t& diameterOut,
+                                      double& avgPathLengthOut)
+{
+    std::map<uint32_t, std::vector<uint32_t>> adj;
+    for (const auto& e : edges)
+    {
+        adj[e.first].push_back(e.second);
+        adj[e.second].push_back(e.first);
+    }
+
+    diameterOut = 0;
+    uint64_t pairCount = 0;
+    uint64_t distanceSum = 0;
+
+    for (uint32_t s = 0; s < n; ++s)
+    {
+        std::vector<int> dist(n, -1);
+        dist[s] = 0;
+        std::queue<uint32_t> q;
+        q.push(s);
+        while (!q.empty())
+        {
+            uint32_t u = q.front();
+            q.pop();
+            auto it = adj.find(u);
+            if (it == adj.end())
+            {
+                continue;
+            }
+            for (uint32_t v : it->second)
+            {
+                if (dist[v] == -1)
+                {
+                    dist[v] = dist[u] + 1;
+                    q.push(v);
+                }
+            }
+        }
+        for (uint32_t t = 0; t < n; ++t)
+        {
+            if (t == s || dist[t] < 0)
+            {
+                continue;
+            }
+            diameterOut = std::max(diameterOut, static_cast<uint32_t>(dist[t]));
+            distanceSum += static_cast<uint64_t>(dist[t]);
+            pairCount++;
+        }
+    }
+
+    avgPathLengthOut = pairCount > 0 ? static_cast<double>(distanceSum) / static_cast<double>(pairCount) : 0.0;
+}
+
 RandomMeshTopology::BuildResult
 RandomMeshTopology::Build()
 {
@@ -287,6 +343,8 @@ RandomMeshTopology::Build()
     result.nodesDroppedForConnectivity = droppedNodes;
     result.victimNodeId = 0;
 
+    ComputePathStats(n, edges, result.diameter, result.avgPathLength);
+
     // Nix-vector routing computes routes on demand (and caches them) instead
     // of precomputing an all-pairs table up front like
     // Ipv4GlobalRoutingHelper -- which is well known not to scale past a few
@@ -313,7 +371,8 @@ RandomMeshTopology::Build()
     std::ostringstream note;
     note << "topology=erdos_renyi n=" << n << " p=" << m_p << " edges=" << edges.size()
          << " regen_attempts=" << result.regenAttempts << " articulation_points=" << artCount
-         << " worst_second_component=" << worstSecond << " nodes_dropped=" << droppedNodes;
+         << " worst_second_component=" << worstSecond << " nodes_dropped=" << droppedNodes
+         << " diameter=" << result.diameter << " avg_path_length=" << result.avgPathLength;
     result.note = note.str();
 
     return result;
