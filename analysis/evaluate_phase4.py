@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Phase 4: the scale-sweep main result.
+"""Phase 4/6: the scale-sweep main result.
 
-Aggregates the same per-run metrics as evaluate_phase1/2/3.py, but as a
-function of network size N: mean +/- 95% CI across seeds for each N. Writes
-a CSV (results/sweep_summary.csv by default) that analysis/plot_sweep.py
-(Phase 5) turns into figures. A cell where the traceback never reaches the
-origin at some N is not an error -- it's recorded as a 0.0 success rate,
-exactly the kind of negative observation the project treats as a real
-result.
+Aggregates the same per-run metrics as evaluate_phase1/2/3.py, as a function
+of network size N. Writes a CSV (results/sweep_summary.csv by default) that
+analysis/plot_sweep.py turns into figures. A cell where the traceback never
+reaches the origin at some N is not an error -- it's a real negative
+observation, and (as of Phase 6) bursts the system never responded to at all
+count as failures rather than being dropped from the denominator.
+
+Two different kinds of interval are reported, deliberately not conflated:
+  - Rate metrics (recall, precision, trace success rate) are discrete
+    per-burst/per-pair Bernoulli trials, POOLED across all seeds and reported
+    as an asymmetric Wilson 95% CI. Sample size is the trial count.
+  - Continuous metrics (hops reached, time-to-trace, score gap) are reported
+    as a per-seed (or per-observation) mean +/- a symmetric t-distribution
+    95% CI. Sample size is the seed/observation count.
+See docs/summaries/phase6 for why a normal-approximation CI over per-seed
+rate averages was misleading (collapses to ~0 width whenever every seed
+happens to hit 0% or 100%).
 
 Usage:
     python3 analysis/evaluate_phase4.py --results-dir ../results \
@@ -20,52 +30,69 @@ import csv
 from pathlib import Path
 from types import SimpleNamespace
 
-from common import load_run, mean_ci95
+from common import load_run, mean_ci95, wilson_ci
 from evaluate_phase1 import evaluate_run as evaluate_phase1_run
 from evaluate_phase2 import evaluate_run as evaluate_phase2_run
 from evaluate_phase3 import evaluate_run as evaluate_phase3_run
 
 
 def summarize_n(results_dir: Path, n: int, seeds: list[int], p1_cfg) -> dict:
-    per_seed_recall1, all_gaps = [], []
-    per_seed_success, per_seed_hops, all_ttt = [], [], []
-    per_seed_precision3, per_seed_recall3 = [], []
+    all_hits, all_prec1, all_gaps = [], [], []
+    all_successes, per_seed_hops, all_ttt = [], [], []
+    total_tp = total_fp = total_fn = 0
     bursts_total = 0
 
     for seed in seeds:
         run = load_run(results_dir, seed, n)
         bursts_total += len(run.oracle_bursts)
 
-        hits, _prec, gaps = evaluate_phase1_run(run, p1_cfg)
-        if hits:
-            per_seed_recall1.append(sum(hits) / len(hits))
+        hits, prec, gaps = evaluate_phase1_run(run, p1_cfg)
+        all_hits += hits
+        all_prec1 += prec
         all_gaps += gaps
 
         succ, hops, ttt = evaluate_phase2_run(run)
-        if succ:
-            per_seed_success.append(sum(succ) / len(succ))
+        all_successes += succ
         if hops:
             per_seed_hops.append(sum(hops) / len(hops))
         all_ttt += ttt
 
-        p3, r3, _ = evaluate_phase3_run(run)
-        if p3 == p3:
-            per_seed_precision3.append(p3)
-        if r3 == r3:
-            per_seed_recall3.append(r3)
-
-    def agg(values):
-        m, ci, k = mean_ci95(values)
-        return m, ci, k
+        tp, fp, fn, _ = evaluate_phase3_run(run)
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
 
     row = {"n": n, "bursts_total": bursts_total}
-    row["single_hop_recall_mean"], row["single_hop_recall_ci"], _ = agg(per_seed_recall1)
-    row["score_gap_mean"], row["score_gap_ci"], _ = agg(all_gaps)
-    row["trace_success_rate_mean"], row["trace_success_rate_ci"], _ = agg(per_seed_success)
-    row["hops_reached_mean"], row["hops_reached_ci"], _ = agg(per_seed_hops)
-    row["time_to_trace_mean"], row["time_to_trace_ci"], _ = agg(all_ttt)
-    row["reid_precision_mean"], row["reid_precision_ci"], _ = agg(per_seed_precision3)
-    row["reid_recall_mean"], row["reid_recall_ci"], _ = agg(per_seed_recall3)
+
+    recall_p, recall_lo, recall_hi, recall_trials = wilson_ci(sum(all_hits), len(all_hits))
+    row["single_hop_recall_p"], row["single_hop_recall_lo"], row["single_hop_recall_hi"], row["single_hop_recall_trials"] = (
+        recall_p, recall_lo, recall_hi, recall_trials)
+
+    prec1_p, prec1_lo, prec1_hi, prec1_trials = wilson_ci(sum(all_prec1), len(all_prec1))
+    row["single_hop_precision_p"], row["single_hop_precision_lo"], row["single_hop_precision_hi"], row["single_hop_precision_trials"] = (
+        prec1_p, prec1_lo, prec1_hi, prec1_trials)
+
+    gap_mean, gap_ci, gap_n = mean_ci95(all_gaps)
+    row["score_gap_mean"], row["score_gap_ci"], row["score_gap_n"] = gap_mean, gap_ci, gap_n
+
+    succ_p, succ_lo, succ_hi, succ_trials = wilson_ci(sum(all_successes), len(all_successes))
+    row["trace_success_rate_p"], row["trace_success_rate_lo"], row["trace_success_rate_hi"], row["trace_success_rate_trials"] = (
+        succ_p, succ_lo, succ_hi, succ_trials)
+
+    hops_mean, hops_ci, hops_n = mean_ci95(per_seed_hops)
+    row["hops_reached_mean"], row["hops_reached_ci"], row["hops_reached_n"] = hops_mean, hops_ci, hops_n
+
+    ttt_mean, ttt_ci, ttt_n = mean_ci95(all_ttt)
+    row["time_to_trace_mean"], row["time_to_trace_ci"], row["time_to_trace_n"] = ttt_mean, ttt_ci, ttt_n
+
+    reidp_p, reidp_lo, reidp_hi, reidp_trials = wilson_ci(total_tp, total_tp + total_fp)
+    row["reid_precision_p"], row["reid_precision_lo"], row["reid_precision_hi"], row["reid_precision_trials"] = (
+        reidp_p, reidp_lo, reidp_hi, reidp_trials)
+
+    reidr_p, reidr_lo, reidr_hi, reidr_trials = wilson_ci(total_tp, total_tp + total_fn)
+    row["reid_recall_p"], row["reid_recall_lo"], row["reid_recall_hi"], row["reid_recall_trials"] = (
+        reidr_p, reidr_lo, reidr_hi, reidr_trials)
+
     return row
 
 
@@ -92,18 +119,25 @@ def main():
 
     rows = [summarize_n(cfg.results_dir, n, cfg.seeds, p1_cfg) for n in cfg.n_values]
 
-    header = ["n", "bursts_total", "single_hop_recall_mean", "single_hop_recall_ci",
-              "score_gap_mean", "score_gap_ci", "trace_success_rate_mean", "trace_success_rate_ci",
-              "hops_reached_mean", "hops_reached_ci", "time_to_trace_mean", "time_to_trace_ci",
-              "reid_precision_mean", "reid_precision_ci", "reid_recall_mean", "reid_recall_ci"]
+    header = [
+        "n", "bursts_total",
+        "single_hop_recall_p", "single_hop_recall_lo", "single_hop_recall_hi", "single_hop_recall_trials",
+        "single_hop_precision_p", "single_hop_precision_lo", "single_hop_precision_hi", "single_hop_precision_trials",
+        "score_gap_mean", "score_gap_ci", "score_gap_n",
+        "trace_success_rate_p", "trace_success_rate_lo", "trace_success_rate_hi", "trace_success_rate_trials",
+        "hops_reached_mean", "hops_reached_ci", "hops_reached_n",
+        "time_to_trace_mean", "time_to_trace_ci", "time_to_trace_n",
+        "reid_precision_p", "reid_precision_lo", "reid_precision_hi", "reid_precision_trials",
+        "reid_recall_p", "reid_recall_lo", "reid_recall_hi", "reid_recall_trials",
+    ]
 
-    print(f"{'N':>6} {'success_rate':>18} {'hops_reached':>16} {'time_to_trace':>16} {'reid_recall':>16}")
+    print(f"{'N':>6} {'success_rate [Wilson 95%]':>28} {'hops_reached':>16} {'time_to_trace':>16} {'reid_recall [Wilson 95%]':>28}")
     for r in rows:
         print(f"{r['n']:>6} "
-              f"{r['trace_success_rate_mean']:.3f}+/-{r['trace_success_rate_ci']:.3f}   "
+              f"{r['trace_success_rate_p']:.3f} [{r['trace_success_rate_lo']:.3f},{r['trace_success_rate_hi']:.3f}] "
               f"{r['hops_reached_mean']:.2f}+/-{r['hops_reached_ci']:.2f}   "
               f"{r['time_to_trace_mean']:.2f}+/-{r['time_to_trace_ci']:.2f}s   "
-              f"{r['reid_recall_mean']:.3f}+/-{r['reid_recall_ci']:.3f}")
+              f"{r['reid_recall_p']:.3f} [{r['reid_recall_lo']:.3f},{r['reid_recall_hi']:.3f}]")
 
     out_csv = cfg.out_csv or (cfg.results_dir / "sweep_summary.csv")
     with out_csv.open("w", newline="") as f:

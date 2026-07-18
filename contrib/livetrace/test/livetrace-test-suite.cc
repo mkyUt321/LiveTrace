@@ -1,3 +1,5 @@
+#include "ns3/attacker-campaign.h"
+#include "ns3/ipv4-address-generator.h"
 #include "ns3/livetrace-config.h"
 #include "ns3/observation-log.h"
 #include "ns3/random-mesh-topology.h"
@@ -67,6 +69,12 @@ class TopologyConnectivityTestCase : public TestCase
   private:
     void DoRun() override
     {
+        // ns-3's Ipv4AddressGenerator is a process-global singleton that
+        // persists across test cases run in the same test-runner binary;
+        // reset it so this test's address assignment doesn't collide with
+        // (or depend on the order of) any other test case that also builds
+        // a topology.
+        Ipv4AddressGenerator::Reset();
         RandomMeshTopology topo(30, 0.15, 50, 42);
         RandomMeshTopology::BuildResult result = topo.Build();
         NS_TEST_ASSERT_MSG_GT(result.nodes.GetN(), 0u, "topology should produce at least one node");
@@ -284,6 +292,76 @@ class ReidentificationEngineTestCase : public TestCase
     }
 };
 
+class TopologyDiameterGrowsWithFixedAvgDegreeTestCase : public TestCase
+{
+  public:
+    TopologyDiameterGrowsWithFixedAvgDegreeTestCase()
+        : TestCase("Fixed avg-degree topology has a non-trivial (>2), non-flat diameter at moderate N")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        // Phase 6 fix: with a fixed edge probability p, denser graphs at
+        // large N kept diameter ~flat (2-3 hops even at N=320), decoupling
+        // traceback difficulty from N entirely. Fixing mean degree instead
+        // (p = avgDegree/(n-1)) lets diameter grow (slowly, ~log N) with N;
+        // this is the load-bearing assumption behind tying attacker chain
+        // length to diameter. Only one topology is built here (rather than
+        // comparing two N values in-process) because ns-3's
+        // Ipv4AddressGenerator is a process-global singleton that collides
+        // on a second Build() call in the same test binary -- real N-scaling
+        // evidence (diameter 3/4/5/6 at N=20/80/320/640, all with
+        // avg_degree=8) was gathered from separate scratch/livetrace-sim
+        // process invocations and is recorded in docs/summaries/phase6.
+        Ipv4AddressGenerator::Reset();
+        double avgDegree = 8.0;
+        uint32_t n = 200;
+        double p = avgDegree / static_cast<double>(n - 1);
+        RandomMeshTopology topo(n, p, 50, 7);
+        RandomMeshTopology::BuildResult result = topo.Build();
+
+        NS_TEST_ASSERT_MSG_GT(result.diameter, 2u,
+                              "diameter at N=200, avg_degree=8 should exceed the ~2-hop diameter "
+                              "the old fixed-p=0.12 generator produced at large N");
+    }
+};
+
+class ChainLengthTargetLawTestCase : public TestCase
+{
+  public:
+    ChainLengthTargetLawTestCase()
+        : TestCase("AttackerCampaign::ComputeChainLengthTarget follows factor*diameter, floored and capped")
+    {
+    }
+
+  private:
+    void DoRun() override
+    {
+        // target = round(factor * diameter), floored at chainLenMin, capped
+        // at chainLenAbsoluteCap. Pure function, no RNG -- exact values.
+        NS_TEST_ASSERT_MSG_EQ(AttackerCampaign::ComputeChainLengthTarget(2, 40, 1.2, 3), 4u,
+                              "round(1.2*3)=4 (round-half-away-from-zero of 3.6)");
+        NS_TEST_ASSERT_MSG_EQ(AttackerCampaign::ComputeChainLengthTarget(2, 40, 1.2, 5), 6u, "round(1.2*5)=6");
+        NS_TEST_ASSERT_MSG_EQ(AttackerCampaign::ComputeChainLengthTarget(2, 40, 1.2, 6), 7u, "round(1.2*6)=7.2->7");
+        // Floor: a diameter of 0 or 1 must not push the target below chainLenMin.
+        NS_TEST_ASSERT_MSG_EQ(AttackerCampaign::ComputeChainLengthTarget(2, 40, 1.2, 0), 2u,
+                              "floored at chainLenMin even for a trivial diameter");
+        // Cap: a huge diameter must not exceed the absolute safety ceiling.
+        NS_TEST_ASSERT_MSG_EQ(AttackerCampaign::ComputeChainLengthTarget(2, 10, 1.2, 100), 10u,
+                              "capped at chainLenAbsoluteCap regardless of diameter");
+        // Monotonic in diameter (the core scaling property the sweep relies on).
+        uint32_t prev = 0;
+        for (uint32_t diam = 1; diam <= 10; ++diam)
+        {
+            uint32_t target = AttackerCampaign::ComputeChainLengthTarget(2, 40, 1.2, diam);
+            NS_TEST_ASSERT_MSG_EQ(target >= prev, true, "chain length target must be non-decreasing in diameter");
+            prev = target;
+        }
+    }
+};
+
 class LiveTraceTestSuite : public TestSuite
 {
   public:
@@ -295,6 +373,8 @@ class LiveTraceTestSuite : public TestSuite
         AddTestCase(new ObservationLogTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new TimingCorrelatorTestCase(), TestCase::Duration::QUICK);
         AddTestCase(new ReidentificationEngineTestCase(), TestCase::Duration::QUICK);
+        AddTestCase(new TopologyDiameterGrowsWithFixedAvgDegreeTestCase(), TestCase::Duration::QUICK);
+        AddTestCase(new ChainLengthTargetLawTestCase(), TestCase::Duration::QUICK);
     }
 };
 
