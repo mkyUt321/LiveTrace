@@ -1,0 +1,69 @@
+# Dedicated, committed config for the Phase 3 re-identification evaluation
+# (two distinct actors, so reid_precision is a meaningful, non-degenerate
+# metric -- see docs/summaries/phase6 for why the single-actor default.yaml
+# makes precision trivially 1.0 regardless of clustering quality).
+#
+# This file makes the Phase 3 result reproducible from the repo alone; the
+# original Phase 3 numbers were produced from a throwaway /tmp config that
+# no longer exists.
+#
+# Usage:
+#   ./ns3 run "scratch/livetrace-sim --config=<repo>/config/phase3_reid_test.yaml --outdir=<repo>/results --seed=1 --n=20"
+
+seed: 1
+num_seeds: 10
+
+topology:
+  model: erdos_renyi
+  n: 20
+  p: 0.25
+  avg_degree: 0     # explicit fixed-p mode for this small, fast test (not
+                     # part of the N sweep, so diameter scaling isn't needed)
+  max_regen_attempts: 50
+
+attacker:
+  count: 2               # two independent actors -> reid_precision is meaningful
+  period_s: 40.0          # short-cycled for fast iteration (this test isn't
+                           # part of the N sweep, so canonical 420s isn't needed)
+  burst_s: 5.0
+  chain_length_min: 2
+  chain_length_absolute_cap: 6
+  chain_length_factor: 1.2
+  packets_per_burst: 80
+  relay_pool_fraction: 0.35
+
+background:
+  enabled: true
+  rate_pps: 0.3
+  packet_size_bytes: 512
+
+window:
+  live_window_s: 5.0
+
+correlation:
+  enabled: true
+  method: zhang_paxson
+  on_threshold_pps: 1.0
+  bucket_s: 0.05
+  min_on_off_transitions: 3
+  score_threshold: 0.5
+  max_lag_buckets: 3
+
+traceback:
+  accumulation_delay_s: 2.0
+  hop_delay_s: 0.6
+  max_hops: 10
+
+reidentification:
+  periodicity_tolerance_s: 5.0
+  fingerprint_weight: 0.15
+  timing_weight: 0.45
+  periodicity_weight: 0.40
+  cluster_score_threshold: 0.5
+
+sim:
+  stop_time_s: 400.0     # 10 periods -> ~10 bursts/actor
+
+sweep:
+  n_values: [20]
+  seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]

@@ -36,8 +36,15 @@ class AttackerCampaign
         double periodS;
         double phaseOffsetS;
         double burstS;
-        uint32_t chainLenMin;
-        uint32_t chainLenMax;
+        uint32_t chainLenMin;         // floor, independent of diameter (e.g. 2)
+        uint32_t chainLenAbsoluteCap; // safety ceiling so a huge diameter can't runaway
+        double chainLengthFactor;     // chain length target = round(factor * diameter);
+                                      // this is what makes the traceback problem's depth
+                                      // actually grow with network size instead of being a
+                                      // fixed constant independent of N (see docs/summaries/phase6)
+        uint32_t diameter;            // measured mesh diameter (public topology info, not
+                                      // ground truth), supplied by the driver after topology
+                                      // construction
         uint32_t packetsPerBurst;
         uint32_t packetSizeBytes;
         double relayPoolFraction; // this actor draws intermediate relays only from a
@@ -61,6 +68,16 @@ class AttackerCampaign
     /// Schedules the first burst (at phaseOffsetS) and, from within each
     /// burst, the next one -- until stopTimeS.
     void Start();
+
+    /// Pure, deterministic (no RNG) computation of the chain-length target
+    /// before jitter is applied: round(factor * diameter), floored at
+    /// chainLenMin and capped at chainLenAbsoluteCap. Exposed statically so
+    /// the diameter-scaling law is unit-testable without running a full
+    /// simulation.
+    static uint32_t ComputeChainLengthTarget(uint32_t chainLenMin,
+                                              uint32_t chainLenAbsoluteCap,
+                                              double chainLengthFactor,
+                                              uint32_t diameter);
 
   private:
     void FireBurst();

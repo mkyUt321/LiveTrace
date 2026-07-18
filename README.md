@@ -16,13 +16,19 @@ rather than discarded.
 The oracle (true actor identity, true chain) is logged only for offline
 scoring; the traceback/correlation/re-identification code never reads it.
 
-**Current headline result** (`docs/summaries/phase4.md`, N=20..320, 5 seeds
-each, chain length 2-5, 5s window): trace success rate is 1.000 ± 0.000 at
-every N tested -- the central difficulty does not bite yet in this parameter
-regime. That's a genuine boundary observation, not a limitation being
-glossed over: chain length is capped independent of N and the window budget
-(~5-6 hops) comfortably covers it. See the summary for what parameter axis
-would need to move to expose the actual difficulty.
+**Current headline result** (`docs/summaries/phase6.md`, N=20..640,
+`config/scale_sweep.yaml`): trace success rate falls from **1.000 at N=20-40
+to 0.325 [0.248, 0.413] at N=640**, a real, statistically-supported
+difficulty curve. Single-hop recall stays at 1.000 across every N, so the
+degradation is squarely a live-window budget problem (hops reached and
+time-to-trace both climb steadily with N), not a correlation failure --
+mesh diameter is held to scale with N (fixed average node degree, not fixed
+edge probability) and stepping-stone chain length is tied to that diameter,
+which is what makes N an axis the difficulty actually responds to. An
+earlier sweep (`docs/summaries/phase4.md`) found a flat 100% success rate at
+every N; that turned out to be an experimental-design artifact (chain length
+was a fixed constant independent of N) rather than evidence the system is
+robust at scale -- see `docs/summaries/phase6.md` for the full audit and fix.
 
 ## Environment (pinned for this project)
 
@@ -37,17 +43,25 @@ would need to move to expose the actual difficulty.
 ## Repository layout
 
 ```
-config/default.yaml       All experiment parameters (topology, attacker,
-                           correlation, sweep) in one place.
+config/default.yaml       Single-actor, canonical-420s-period baseline (matches
+                           the literal spec); also the single-run example config.
+config/scale_sweep.yaml   Main-result sweep config: 2 actors, fixed avg degree
+                           (diameter grows with N), compressed period for
+                           statistical power. See docs/summaries/phase6.md.
+config/phase3_reid_test.yaml  Dedicated 2-actor re-identification test config
+                           (makes reid_precision non-degenerate).
 contrib/livetrace/        ns-3 module: topology, attacker, relay, background
                            traffic, oracle logger, observation log,
                            correlator, traceback observer, re-id engine.
 scratch/livetrace-sim.cc  Simulation driver (reads config, runs one seed).
 analysis/                 Python: log parsing, metrics, scale-sweep harness,
                            figures.
+tests/                    Python unit tests for the analysis/ statistics helpers.
 tools/setup.sh            Symlinks contrib/scratch into ns-3-dev and
                            configures the build.
-tools/run_sweep.sh         Runs the N x seed grid.
+tools/run_sweep.sh        Runs a simple N x seed grid (one seed count for all N).
+tools/run_sweep_staged.sh Runs the main sweep with fewer seeds at large N
+                           (large N is much slower per seed).
 results/                  Raw JSONL logs + figures (gitignored; regenerate
                            via the commands below).
 docs/summaries/            Per-phase Markdown summaries for transcription
@@ -74,20 +88,38 @@ Run the ns-3 unit tests for this module:
 cd "$NS3_DIR" && ./test.py -s livetrace
 ```
 
-## Reproducing the scale sweep (Phase 4's main result)
+## Reproducing the scale sweep (main result)
 
 ```bash
-tools/run_sweep.sh config/default.yaml results   # ~40 min for the default 5x5 grid
+tools/run_sweep_staged.sh config/scale_sweep.yaml results   # ~50 min: N<=320 at 8 seeds, N=640 at 3
 python3 analysis/evaluate_phase4.py --results-dir results \
-    --n-values 20 40 80 160 320 --seeds 1 2 3 4 5
+    --n-values 20 40 80 160 320 --seeds 1 2 3 4 5 6 7 8 --out-csv /tmp/sweep_stage1.csv
+python3 analysis/evaluate_phase4.py --results-dir results \
+    --n-values 640 --seeds 1 2 3 --out-csv /tmp/sweep_stage2.csv
+head -1 /tmp/sweep_stage1.csv > results/sweep_summary.csv
+tail -n +2 /tmp/sweep_stage1.csv >> results/sweep_summary.csv
+tail -n +2 /tmp/sweep_stage2.csv >> results/sweep_summary.csv
 python3 analysis/plot_sweep.py --csv results/sweep_summary.csv --out-dir results
 ```
 
-This writes `results/sweep_summary.csv` and `results/scale_sweep.png` (mean ±
-95% CI, four panels, N on a log axis). Open any `results/netanim_*.xml` in
-NetAnim to watch the traceback observer highlight confirmed hops live as it
-runs -- red for a hop the online correlator just confirmed, blue for the
-victim.
+(`config/default.yaml` + `tools/run_sweep.sh` still work for a simpler,
+single-actor, canonical-420s-period, fixed-p sweep -- that's what
+`docs/summaries/phase4.md` used, before the Phase 6 fixes below.)
+
+This writes `results/sweep_summary.csv` and `results/scale_sweep.png`
+(Wilson 95% CI for rate metrics, t-distribution 95% CI for continuous
+metrics, four panels, N on a log axis, each point annotated with its sample
+size). Open any `results/netanim_*.xml` in NetAnim to watch the traceback
+observer highlight confirmed hops live as it runs -- red for a hop the
+online correlator just confirmed, blue for the victim.
+
+Reproduce the Phase 3 two-actor re-identification test (needed for a
+meaningful `reid_precision`, which is trivially 1.0 with only one true
+actor):
+
+```bash
+./ns3 run "scratch/livetrace-sim --config=$LIVETRACE_DIR/config/phase3_reid_test.yaml --outdir=$LIVETRACE_DIR/results --seed=1 --n=20"
+```
 
 ## Design decisions and why
 
@@ -121,6 +153,22 @@ victim.
   -- and thus the correlator's candidate pool size -- stays comparable
   across the sweep instead of thinning out as the same fixed aggregate rate
   spreads over more nodes.
+- **Topology uses fixed average node degree, not fixed edge probability**
+  (`topology.avg_degree`, deriving `p = avg_degree/(n-1)`). With fixed p the
+  mesh gets relatively denser as N grows and diameter stays ~flat (2-3 hops
+  even at N=320); fixed degree instead lets diameter grow (~log N) with N,
+  which is what stepping-stone chain length (`attacker.chain_length_factor
+  * diameter`) is tied to -- see `docs/summaries/phase6.md` for why this is
+  the single most load-bearing fix behind the current headline result.
+- **Rate metrics (recall, precision, trace success rate) use a pooled
+  Wilson binomial CI over raw trial outcomes**, not a mean +/- CI across
+  per-seed rate averages. The latter collapses to a misleadingly tight
+  (often exactly 0-width) interval whenever every seed happens to land on
+  0% or 100% -- which is exactly what an early, buggy sweep showed. A burst
+  the online system never produced a matching trace for counts as a
+  failure, not a silently dropped denominator entry.
 
 See `docs/summaries/` for the per-phase parameters, metrics, and results as
-they're produced.
+they're produced -- `phase6.md` in particular documents a full audit of the
+issues above, run when the initial Phase 4 sweep produced a suspicious flat
+100% result.
