@@ -25,7 +25,7 @@
   - 生きた追跡窓: 5.0秒(蓄積2.0秒 + ホップごと0.6秒)。
 - 規模スイープの N グリッド: **20, 40, 80, 160, 320, 640**。N≤320 は8 seed、N=640 は3 seed
   (実測実行時間差に基づく段階運用。N=640 は1 seedあたり約7分)。
-  総実行数43、総実行時間3041秒(約51分)、全run正常終了。
+  総実行数43、総実行時間2967秒(約49.5分)、全run正常終了(2026-07-19 実行分)。
 
 ## パイプライン構成
 
@@ -38,6 +38,13 @@
 
 いずれの段も、真の攻撃者ID・真の連鎖経路(オラクル)は事後の評価にのみ使用し、
 オンラインで動作するシステム自身には一切渡していない。
+
+**再現性の検証(2026-07-19):** 出力ログの書込失敗を fail-fast 化、`ObservationLog` の窓クエリを
+挿入時ソート+二分探索へ最適化、評価スクリプトのバースト↔トレース/reidレコード対応を一対一割当化
+(2 actor構成でバーストが接近した場合の二重計上防止)した現行コードで、本スイープを同一設定・同一
+seedで再実行した。結果、以下の数値表・両図は前回実行と**完全に一致**(`sweep_summary.csv` の全セル、
+`scale_sweep.png`・`mechanism_vs_n.png` ともにバイト単位で同一)し、これらの修正が主結果を変えて
+いないこと、およびシミュレーション自体が seed 固定で厳密に決定論的であることを確認した。
 
 ## 主結果: 規模スイープ
 
@@ -103,7 +110,7 @@
 ## 再現方法
 
 ```bash
-tools/run_sweep_staged.sh config/scale_sweep.yaml results   # 約51分: N<=320は8 seed, N=640は3 seed
+tools/run_sweep_staged.sh config/scale_sweep.yaml results   # 約50分: N<=320は8 seed, N=640は3 seed
 python3 analysis/evaluate_phase4.py --results-dir results \
     --n-values 20 40 80 160 320 --seeds 1 2 3 4 5 6 7 8 --out-csv /tmp/sweep_stage1.csv
 python3 analysis/evaluate_phase4.py --results-dir results \
