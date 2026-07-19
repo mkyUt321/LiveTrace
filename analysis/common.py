@@ -93,6 +93,53 @@ def mean_ci95(values):
     return (mean, half_width, n)
 
 
+def assign_one_to_one(bursts, records, record_time, tolerance):
+    """Match each oracle burst to at most one record by detection-time
+    proximity, one-to-one (each record used at most once).
+
+    The online system has no burst_id -- evaluation lines bursts up to
+    traceback/reid records after the fact purely by how close their
+    timestamps are. Matching each burst independently (nearest-record,
+    ignoring what other bursts picked) lets two nearby bursts both claim the
+    same record when their tolerance windows overlap, double-counting one
+    system response as evidence for two different bursts. This matters for
+    multi-actor configs (e.g. config/scale_sweep.yaml) where bursts from
+    different actors can legitimately land within a couple of seconds of
+    each other; it's a no-op for single-actor runs where bursts never
+    overlap within `tolerance`.
+
+    Args:
+        bursts: sequence of dicts, each with a 'start_time_s' key.
+        records: sequence of candidate records (any type); `record_time`
+            extracts a float timestamp from one.
+        record_time: callable, record -> float.
+        tolerance: max allowed |record_time(record) - burst['start_time_s']|
+            for a candidate pairing to be considered at all.
+
+    Returns:
+        A list parallel to `bursts`: the assigned record, or None if no
+        record was available within tolerance (or all sufficiently close
+        records were already claimed by a closer-matching burst).
+    """
+    candidates = []
+    for bi, b in enumerate(bursts):
+        for ri, r in enumerate(records):
+            dt = abs(record_time(r) - b["start_time_s"])
+            if dt <= tolerance:
+                candidates.append((dt, bi, ri))
+    candidates.sort(key=lambda x: x[0])
+
+    assigned = [None] * len(bursts)
+    used_bursts, used_records = set(), set()
+    for dt, bi, ri in candidates:
+        if bi in used_bursts or ri in used_records:
+            continue
+        assigned[bi] = records[ri]
+        used_bursts.add(bi)
+        used_records.add(ri)
+    return assigned
+
+
 def wilson_ci(successes: int, trials: int, z: float = 1.96):
     """Wilson score interval for a binomial proportion, computed on POOLED
     raw trial outcomes (not per-seed averages -- see mean_ci95's docstring

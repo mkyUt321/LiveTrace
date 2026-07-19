@@ -23,9 +23,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from pathlib import Path
 
-from common import flow_side_addr, load_run, mean_ci95, wilson_ci
+from common import assign_one_to_one, flow_side_addr, load_run, mean_ci95, wilson_ci
 from correlator import compute_on_off_signal, correlate
 
 VICTIM_PORT = 9999
@@ -36,7 +37,22 @@ def evaluate_run(run, cfg):
     online_precisions = [] # 1/0 per "matched" output
     score_gaps = []         # true_score - best_false_score, when both exist
 
-    for burst in run.oracle_bursts:
+    # Single-hop accuracy looks at each trace's hop-0 record specifically
+    # (not just "whichever traceback row happens to be time-nearest", which
+    # could be a later hop of the same trace). One-to-one assignment to
+    # oracle bursts prevents two nearby bursts from both claiming the same
+    # trace as their evidence (see common.assign_one_to_one).
+    by_trace = defaultdict(list)
+    for rec in run.traceback:
+        by_trace[rec["trace_id"]].append(rec)
+    hop0_records = []
+    for trace_id, recs in by_trace.items():
+        recs.sort(key=lambda r: r["hops_so_far"])
+        hop0_records.append(recs[0])
+    assigned_attempts = assign_one_to_one(
+        run.oracle_bursts, hop0_records, lambda r: r["burst_detect_time_s"], tolerance=cfg.live_window)
+
+    for burst, attempt in zip(run.oracle_bursts, assigned_attempts):
         chain = burst["true_chain"]
         start = burst["start_time_s"]
         victim_node = chain[-1]
@@ -94,15 +110,10 @@ def evaluate_run(run, cfg):
 
         # Online: what the real system actually reported. A burst with no
         # matching attempt at all (the system never responded within
-        # tolerance) is the most damning outcome and must count as a
-        # recall failure, not be dropped from the denominator.
-        attempt = min(
-            run.traceback,
-            key=lambda a: abs(a["burst_detect_time_s"] - start),
-            default=None,
-        )
-        has_attempt = attempt is not None and abs(attempt["burst_detect_time_s"] - start) <= cfg.live_window
-        matched = has_attempt and attempt["stop_reason"] == "matched"
+        # tolerance, or its trace was already claimed by a closer burst)
+        # is the most damning outcome and must count as a recall failure,
+        # not be dropped from the denominator.
+        matched = attempt is not None and attempt["stop_reason"] == "matched"
         resolved_node = run.addr_to_node.get(flow_side_addr(attempt["matched_flow"], True)) if matched else None
 
         if expected_upstream is not None:

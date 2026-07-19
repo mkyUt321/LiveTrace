@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "analysis"))
 
-from common import RunLogs, mean_ci95, wilson_ci  # noqa: E402
+from common import RunLogs, assign_one_to_one, mean_ci95, wilson_ci  # noqa: E402
 from evaluate_phase2 import evaluate_run as evaluate_phase2_run  # noqa: E402
 from evaluate_phase3 import evaluate_run as evaluate_phase3_run  # noqa: E402
 
@@ -71,6 +71,47 @@ class MeanCiTTests(unittest.TestCase):
         mean, half_width, n = mean_ci95([])
         self.assertTrue(math.isnan(mean))
         self.assertEqual(n, 0)
+
+
+class AssignOneToOneTests(unittest.TestCase):
+    """The Phase-6-followup fix: evaluation previously matched each burst to
+    its nearest record independently, so two nearby bursts (e.g. from
+    different actors in a multi-actor sweep config) could both claim the
+    same trace/reid record as their evidence. assign_one_to_one enforces
+    that each record is claimed by at most one burst."""
+
+    def test_closer_burst_wins_the_shared_record(self):
+        bursts = [{"start_time_s": 100.0}, {"start_time_s": 101.0}]
+        records = [{"t": 100.3}]  # within tolerance of both bursts
+
+        assigned = assign_one_to_one(bursts, records, lambda r: r["t"], tolerance=2.0)
+
+        self.assertIs(assigned[0], records[0], "the closer burst (distance 0.3) should win the record")
+        self.assertIsNone(assigned[1], "the farther burst (distance 0.7) must not also claim it")
+
+    def test_each_burst_gets_its_own_nearby_record(self):
+        bursts = [{"start_time_s": 0.0}, {"start_time_s": 100.0}]
+        records = [{"t": 0.1}, {"t": 100.2}]
+
+        assigned = assign_one_to_one(bursts, records, lambda r: r["t"], tolerance=2.0)
+
+        self.assertIs(assigned[0], records[0])
+        self.assertIs(assigned[1], records[1])
+
+    def test_no_records_all_none(self):
+        bursts = [{"start_time_s": 5.0}, {"start_time_s": 50.0}]
+
+        assigned = assign_one_to_one(bursts, [], lambda r: r["t"], tolerance=2.0)
+
+        self.assertEqual(assigned, [None, None])
+
+    def test_tolerance_excludes_far_records(self):
+        bursts = [{"start_time_s": 0.0}]
+        records = [{"t": 10.0}]
+
+        assigned = assign_one_to_one(bursts, records, lambda r: r["t"], tolerance=2.0)
+
+        self.assertEqual(assigned, [None])
 
 
 class MissingTraceCountsAsFailureTests(unittest.TestCase):

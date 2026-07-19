@@ -26,7 +26,7 @@ import argparse
 from collections import defaultdict
 from pathlib import Path
 
-from common import load_run, mean_ci95, wilson_ci
+from common import assign_one_to_one, load_run, mean_ci95, wilson_ci
 
 
 def evaluate_run(run):
@@ -34,25 +34,28 @@ def evaluate_run(run):
     for rec in run.traceback:
         by_trace[rec["trace_id"]].append(rec)
 
-    # Match each oracle burst to the trace whose burst_detect_time_s is
-    # closest to the burst's start_time_s (the observer has no burst_id --
-    # it never sees the oracle -- so time proximity is how evaluation lines
-    # them up after the fact).
-    traces_by_detect_time = []
+    traces = []
     for trace_id, recs in by_trace.items():
         recs.sort(key=lambda r: r["hops_so_far"])
-        traces_by_detect_time.append((recs[0]["burst_detect_time_s"], recs))
+        traces.append(recs)
+
+    # Match each oracle burst to the trace whose burst_detect_time_s is
+    # closest to the burst's start_time_s, one-to-one (the observer has no
+    # burst_id -- it never sees the oracle -- so time proximity is how
+    # evaluation lines them up after the fact; one-to-one matching prevents
+    # two nearby bursts, e.g. from different actors in a multi-actor config,
+    # from both claiming the same trace as their evidence).
+    assigned = assign_one_to_one(run.oracle_bursts, traces, lambda recs: recs[0]["burst_detect_time_s"], tolerance=2.0)
 
     successes = []       # 1/0 per burst -- every oracle burst gets an entry
     hops_reached = []    # per burst, regardless of success (0 if no trace found)
     time_to_trace = []   # successful bursts only
 
-    for burst in run.oracle_bursts:
+    for burst, recs in zip(run.oracle_bursts, assigned):
         start = burst["start_time_s"]
         expected = list(reversed(burst["true_chain"]))  # victim-first order
 
-        best = min(traces_by_detect_time, key=lambda t: abs(t[0] - start), default=None)
-        if best is None or abs(best[0] - start) > 2.0:
+        if recs is None:
             # The system produced no matching trace for this burst at all --
             # the most damning possible outcome, so it must count as a
             # failure rather than being dropped from every metric's
@@ -61,7 +64,6 @@ def evaluate_run(run):
             hops_reached.append(0)
             continue
 
-        recs = best[1]
         final = recs[-1]
         chain = final["chain_so_far"]
 

@@ -32,23 +32,23 @@ import argparse
 from itertools import combinations
 from pathlib import Path
 
-from common import load_run, wilson_ci
+from common import assign_one_to_one, load_run, wilson_ci
 
 
 def evaluate_run(run):
-    # Match each oracle burst to the nearest reid record by detection time.
-    # A burst with no matching reid record still gets an entry -- with
-    # assigned_cluster_id=None, a sentinel that can never equal any real
-    # cluster id, so it correctly contributes recall misses for every
-    # same-actor pair it's part of instead of being silently dropped.
+    # Match each oracle burst to the nearest reid record by detection time,
+    # one-to-one (each reid record claimed by at most one burst -- see
+    # common.assign_one_to_one for why this matters once bursts can land
+    # close together in time, e.g. from different actors). A burst with no
+    # matching reid record still gets an entry -- with assigned_cluster_id=
+    # None, a sentinel that can never equal any real cluster id, so it
+    # correctly contributes recall misses for every same-actor pair it's
+    # part of instead of being silently dropped.
+    assigned = assign_one_to_one(run.oracle_bursts, run.reid, lambda r: r["detect_time_s"], tolerance=2.0)
     labeled = []  # (true_actor_id, assigned_cluster_id or None)
-    for burst in run.oracle_bursts:
-        start = burst["start_time_s"]
-        best = min(run.reid, key=lambda r: abs(r["detect_time_s"] - start), default=None)
-        if best is None or abs(best["detect_time_s"] - start) > 2.0:
-            labeled.append((burst["true_actor_id"], None))
-            continue
-        labeled.append((burst["true_actor_id"], best["assigned_cluster_id"]))
+    for burst, rec in zip(run.oracle_bursts, assigned):
+        cluster_id = rec["assigned_cluster_id"] if rec is not None else None
+        labeled.append((burst["true_actor_id"], cluster_id))
 
     tp = fp = fn = 0
     for (true_a, pred_a), (true_b, pred_b) in combinations(labeled, 2):
