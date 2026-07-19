@@ -46,6 +46,13 @@ class ReidentificationEngine
 
     ReidentificationEngine(ObservationLog* obsLog, TimingCorrelator* correlator, Config cfg, const std::string& outPath);
 
+    /// False if the output file at `outPath` could not be opened -- callers
+    /// should treat this as fatal rather than silently losing reid output.
+    bool Ok() const
+    {
+        return m_out.is_open();
+    }
+
     /// Hook this to TracebackObserver::SetTraceCompleteNotify.
     void OnTraceComplete(uint32_t traceId,
                          double burstDetectTimeS,

@@ -28,6 +28,7 @@
 #include "ns3/udp-header.h"
 
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -376,8 +377,27 @@ main(int argc, char* argv[])
     std::string tracebackPath = outDir + "/traceback_" + tag + ".jsonl";
     std::string reidPath = outDir + "/reid_" + tag + ".jsonl";
 
+    // Fail fast if outDir isn't writable, rather than letting every logger
+    // below silently no-op and producing a "successful" run with empty logs.
+    {
+        std::string probePath = outDir + "/.livetrace_write_test";
+        std::ofstream probe(probePath);
+        if (!probe.is_open())
+        {
+            std::cerr << "LiveTrace: output directory not writable: " << outDir << std::endl;
+            return 1;
+        }
+        probe.close();
+        std::remove(probePath.c_str());
+    }
+
     OracleLogger oracle(oraclePath);
     ObservationLog obsLog(observedPath);
+    if (!oracle.Ok() || !obsLog.Ok())
+    {
+        std::cerr << "LiveTrace: failed to open oracle/observation log output files under " << outDir << std::endl;
+        return 1;
+    }
 
     RandomMeshTopology topology(n, p, maxRegen, seed);
     RandomMeshTopology::BuildResult built = topology.Build();
@@ -399,6 +419,11 @@ main(int argc, char* argv[])
                                 // interface assignment, same as a real host inventory.
     {
         std::ofstream topoOut(topologyMapPath);
+        if (!topoOut.is_open())
+        {
+            std::cerr << "LiveTrace: failed to open topology map output file: " << topologyMapPath << std::endl;
+            return 1;
+        }
         for (uint32_t i = 0; i < nodes.GetN(); ++i)
         {
             Ptr<Ipv4> ipv4 = nodes.Get(i)->GetObject<Ipv4>();
@@ -455,6 +480,11 @@ main(int argc, char* argv[])
     obsCfg.maxHops = static_cast<uint32_t>(cfg.GetInt("traceback.max_hops", 10));
     obsCfg.scoreThreshold = cfg.GetDouble("correlation.score_threshold", 0.5);
     TracebackObserver observer(&obsLog, &addrIndex, &correlator, victimNodeId, obsCfg, tracebackPath);
+    if (!observer.Ok())
+    {
+        std::cerr << "LiveTrace: failed to open traceback output file: " << tracebackPath << std::endl;
+        return 1;
+    }
 
     ReidentificationEngine::Config reidCfg;
     reidCfg.periodPriorS = cfg.GetDouble("attacker.period_s", 420.0);
@@ -465,6 +495,11 @@ main(int argc, char* argv[])
     reidCfg.fingerprintWeight = cfg.GetDouble("reidentification.fingerprint_weight", 0.15);
     reidCfg.clusterScoreThreshold = cfg.GetDouble("reidentification.cluster_score_threshold", 0.5);
     ReidentificationEngine reid(&obsLog, &correlator, reidCfg, reidPath);
+    if (!reid.Ok())
+    {
+        std::cerr << "LiveTrace: failed to open reidentification output file: " << reidPath << std::endl;
+        return 1;
+    }
 
     PhysicalRouteIndex physicalRoutes;
     TraceVisualizer viz(anim, physicalRoutes, victimNodeId, nodeSize);

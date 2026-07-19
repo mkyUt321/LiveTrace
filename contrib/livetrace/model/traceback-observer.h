@@ -71,6 +71,13 @@ class TracebackObserver
                        Config cfg,
                        const std::string& outPath);
 
+    /// False if the output file at `outPath` could not be opened -- callers
+    /// should treat this as fatal rather than silently losing traceback logs.
+    bool Ok() const
+    {
+        return m_out.is_open();
+    }
+
     /// Hook this to the victim sink's StepstoneRelayApp::SetRecvNotify.
     void OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr);
 

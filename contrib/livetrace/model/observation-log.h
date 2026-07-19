@@ -36,6 +36,16 @@ class ObservationLog
     explicit ObservationLog(const std::string& persistPath = "");
     ~ObservationLog();
 
+    /// True unless a persist path was given but couldn't be opened -- an
+    /// ObservationLog with no persist path at all (the common case in unit
+    /// tests) is fine and reports true. Callers that did request persistence
+    /// should treat false as fatal rather than silently running with the
+    /// observation log going nowhere.
+    bool Ok() const
+    {
+        return !m_persistRequested || m_persist.is_open();
+    }
+
     void RecordSend(uint32_t nodeId, const std::string& flowKey, double timeS, uint32_t sizeBytes);
     void RecordRecv(uint32_t nodeId, const std::string& flowKey, double timeS, uint32_t sizeBytes);
 
@@ -54,6 +64,7 @@ class ObservationLog
     std::map<uint32_t, std::vector<Event>> m_byNode;
     std::map<std::string, std::vector<Event>> m_byFlow;
     std::ofstream m_persist;
+    bool m_persistRequested = false;
 };
 
 } // namespace livetrace

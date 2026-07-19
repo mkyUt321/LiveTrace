@@ -28,6 +28,14 @@ class OracleLogger
     explicit OracleLogger(const std::string& path);
     ~OracleLogger();
 
+    /// False if the output file at `path` could not be opened (e.g. the
+    /// directory doesn't exist) -- callers should treat this as fatal rather
+    /// than silently running with ground truth going nowhere.
+    bool Ok() const
+    {
+        return m_out.is_open();
+    }
+
     /// Record one burst's ground truth: which actor it belongs to and the
     /// true overlay chain of node ids, origin first, victim last.
     void LogBurst(uint32_t burstId,

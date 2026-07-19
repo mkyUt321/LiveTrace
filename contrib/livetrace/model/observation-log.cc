@@ -8,8 +8,9 @@ namespace livetrace
 {
 
 ObservationLog::ObservationLog(const std::string& persistPath)
+    : m_persistRequested(!persistPath.empty())
 {
-    if (!persistPath.empty())
+    if (m_persistRequested)
     {
         m_persist.open(persistPath);
     }
