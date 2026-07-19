@@ -45,14 +45,24 @@ class TracebackObserver
 
     /// traceId, burstDetectTimeS, finalChain (victim-first), stopReason,
     /// hop0FlowKey (the victim-inbound flow that seeded this trace -- the
-    /// most directly cross-burst-comparable signal for re-identification).
-    using TraceCompleteFn =
-        std::function<void(uint32_t, double, std::vector<uint32_t>, std::string, std::string)>;
+    /// most directly cross-burst-comparable signal for re-identification),
+    /// lastConfirmedFlowKey (the flow the walk was still following when it
+    /// stopped -- lets a caller resolve the physical route into the final
+    /// node, e.g. for NetAnim's L3 overlay).
+    using TraceCompleteFn = std::
+        function<void(uint32_t, double, std::vector<uint32_t>, std::string, std::string, std::string)>;
 
-    /// traceId, nodeId just confirmed, hopsSoFar, eval time -- fired at every
-    /// successful hop (not just trace completion). Used to drive NetAnim
-    /// node highlighting live as the trace progresses (Phase 5).
-    using HopConfirmedFn = std::function<void(uint32_t, uint32_t, uint32_t, double)>;
+    /// traceId, nodeId just confirmed, hopsSoFar, eval time, downstreamFlowKey
+    /// (the flow this hop was matched from -- lets a caller resolve the
+    /// physical route between this node and the previously confirmed one).
+    /// Fired at every successful hop (not just trace completion). Used to
+    /// drive NetAnim node highlighting live as the trace progresses (Phase 5).
+    using HopConfirmedFn = std::function<void(uint32_t, uint32_t, uint32_t, double, std::string)>;
+
+    /// traceId, timeS -- fired the moment a new trace begins (a fresh flow
+    /// arrives at the victim). Used to reset per-burst NetAnim highlighting
+    /// before the new trace's hops start lighting up.
+    using TraceStartedFn = std::function<void(uint32_t, double)>;
 
     TracebackObserver(ObservationLog* obsLog,
                        NodeAddressIndex* addrIndex,
@@ -70,6 +80,9 @@ class TracebackObserver
 
     /// Fired on every confirmed hop, as it happens.
     void SetHopConfirmedNotify(HopConfirmedFn fn);
+
+    /// Fired once per trace when it starts (before its first hop).
+    void SetTraceStartedNotify(TraceStartedFn fn);
 
   private:
     void AttemptTrace(uint32_t traceId,
@@ -89,6 +102,7 @@ class TracebackObserver
     uint32_t m_nextTraceId;
     TraceCompleteFn m_traceComplete;
     HopConfirmedFn m_hopConfirmed;
+    TraceStartedFn m_traceStarted;
 };
 
 } // namespace livetrace

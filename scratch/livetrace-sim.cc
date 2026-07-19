@@ -13,6 +13,7 @@
 #include "ns3/background-traffic.h"
 #include "ns3/core-module.h"
 #include "ns3/internet-module.h"
+#include "ns3/ipv4-header.h"
 #include "ns3/livetrace-config.h"
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
@@ -24,11 +25,15 @@
 #include "ns3/stepstone-relay-app.h"
 #include "ns3/timing-correlator.h"
 #include "ns3/traceback-observer.h"
+#include "ns3/udp-header.h"
 
 #include <cmath>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <optional>
 #include <random>
+#include <set>
 #include <sstream>
 
 using namespace ns3;
@@ -56,6 +61,264 @@ LayoutNodesOnCircle(NodeContainer& nodes, double radius = 500.0)
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     mobility.Install(nodes);
 }
+
+/// Reproduces livetrace::MakeFlowKey's "<addr>:<port>-><addr>:<port>" format
+/// locally (rather than including contrib/livetrace/model/flow-key-util.h via
+/// "ns3/flow-key-util.h") because that header name collides with an
+/// unrelated sibling module also symlinked into this ns-3-dev checkout
+/// (contrib/junktrace, from a separate project), which wins the flattened
+/// ns3/ include namespace and shadows livetrace's own version.
+std::string
+OverlayFlowKey(Ipv4Address srcAddr, uint16_t srcPort, Ipv4Address dstAddr, uint16_t dstPort)
+{
+    std::ostringstream oss;
+    srcAddr.Print(oss);
+    oss << ":" << srcPort << "->";
+    dstAddr.Print(oss);
+    oss << ":" << dstPort;
+    return oss.str();
+}
+
+/**
+ * Physical (L3) relay lookup for the NetAnim visualization only: records,
+ * for every overlay UDP flow, which nodes performed pure IP forwarding
+ * (as opposed to originating or terminating it) by hooking Ipv4L3Protocol's
+ * UnicastForward trace on every node. This has no bearing on traceback or
+ * correlation -- those never look at IP-forwarding events, only at flows
+ * observed by StepstoneRelayApp -- it exists purely so NetAnim can show the
+ * physical route underneath a confirmed overlay hop (pale-red intermediate
+ * nodes) alongside the overlay hop itself (red confirmed relay).
+ */
+class PhysicalRouteIndex
+{
+  public:
+    void Connect()
+    {
+        Config::Connect("/NodeList/*/$ns3::Ipv4L3Protocol/UnicastForward",
+                         MakeCallback(&PhysicalRouteIndex::OnForward, this));
+    }
+
+    const std::set<uint32_t>& RelaysFor(const std::string& flowKey) const
+    {
+        static const std::set<uint32_t> kEmpty;
+        auto it = m_relaysByFlow.find(flowKey);
+        return it == m_relaysByFlow.end() ? kEmpty : it->second;
+    }
+
+  private:
+    void OnForward(std::string context, const Ipv4Header& header, Ptr<const Packet> packet, uint32_t /*interface*/)
+    {
+        UdpHeader udpHdr;
+        if (packet->PeekHeader(udpHdr) == 0)
+        {
+            return; // not UDP -- this simulation only ever sends UDP
+        }
+        if (udpHdr.GetDestinationPort() == kBackgroundPort)
+        {
+            // Background noise flows are never looked up by the visualizer;
+            // skipping them keeps this map small on the full N-sweep runs
+            // (where background traffic is by far the largest packet volume).
+            return;
+        }
+        std::string flowKey = OverlayFlowKey(header.GetSource(), udpHdr.GetSourcePort(), header.GetDestination(),
+                                              udpHdr.GetDestinationPort());
+        m_relaysByFlow[flowKey].insert(ParseNodeId(context));
+    }
+
+    static uint32_t ParseNodeId(const std::string& context)
+    {
+        const std::string prefix = "/NodeList/";
+        size_t start = context.find(prefix) + prefix.size();
+        size_t end = context.find('/', start);
+        return static_cast<uint32_t>(std::stoul(context.substr(start, end - start)));
+    }
+
+    std::map<std::string, std::set<uint32_t>> m_relaysByFlow;
+};
+
+/**
+ * Drives NetAnim node coloring from the traceback observer's live callbacks.
+ * Colors form a priority ladder:
+ *   green (victim) > purple (this burst's estimated origin) > red (confirmed
+ *   L7 relay hop) > pale red (L3-only physical forwarder under a confirmed
+ *   hop) > light purple (the immediately preceding burst's estimated origin)
+ *   > grey (idle).
+ * Only a single node -- the origin estimated in the immediately preceding
+ * burst -- carries the light-purple marker at any time; when a newer origin
+ * takes over, the previous holder simply goes back to grey (origins older
+ * than the immediately preceding one are not kept). That marker sits *below*
+ * red/pale-red, so if the current burst's chain crosses it, it lights up
+ * red/pale-red for that burst like any other node. "Reset", fired at the
+ * start of each new trace, clears the *previous* trace's red / pale-red
+ * highlighting -- an active light-purple holder stays light purple, the
+ * newly finished origin becomes the light-purple holder (demoting purple
+ * "latest origin" in the same step), and everything else goes back to grey.
+ * This assumes traces don't overlap in time, which holds for the
+ * single-actor visualization config this is intended for; it does not
+ * attempt to disentangle concurrently in-flight traces from multiple
+ * simultaneous actors.
+ */
+class TraceVisualizer
+{
+  public:
+    TraceVisualizer(AnimationInterface& anim, PhysicalRouteIndex& routes, uint32_t victimNodeId, double nodeSize)
+        : m_anim(anim),
+          m_routes(routes),
+          m_victimNodeId(victimNodeId),
+          m_nodeSize(nodeSize)
+    {
+    }
+
+    void OnTraceStarted(uint32_t /*traceId*/, double /*timeS*/)
+    {
+        for (uint32_t nodeId : m_pendingReset)
+        {
+            ResetNode(nodeId);
+        }
+        m_pendingReset.clear();
+    }
+
+    void OnHopConfirmed(uint32_t /*traceId*/,
+                         uint32_t nodeId,
+                         uint32_t /*hopsSoFar*/,
+                         double /*evalTimeS*/,
+                         const std::string& downstreamFlowKey)
+    {
+        Paint(nodeId, VizColor::kRed);
+        m_pendingReset.insert(nodeId);
+        PaintPhysicalRelays(downstreamFlowKey);
+    }
+
+    void OnTraceComplete(uint32_t /*traceId*/,
+                          const std::vector<uint32_t>& chain,
+                          const std::string& stopReason,
+                          const std::string& lastConfirmedFlowKey)
+    {
+        // Only "no_match_above_threshold" means the walk actually ran out of
+        // upstream flow at chain.back() -- i.e. it reached the true origin
+        // (or lost the trail right at that node). Other stop reasons
+        // (window_expired, hop_limit_reached, ...) are a live-window budget
+        // running out mid-chain, not an origin estimate, so they get no
+        // special color.
+        if (stopReason == "no_match_above_threshold" && !chain.empty())
+        {
+            uint32_t originGuess = chain.back();
+            if (originGuess != m_victimNodeId)
+            {
+                Paint(originGuess, VizColor::kLatestOrigin);
+                m_pendingReset.insert(originGuess);
+                PaintPhysicalRelays(lastConfirmedFlowKey);
+            }
+        }
+    }
+
+  private:
+    enum class VizColor
+    {
+        kGrey = 0,
+        kPastOrigin = 1, // low-priority marker: the immediately preceding burst's estimated origin
+        kPaleRed = 2,
+        kRed = 3,
+        kLatestOrigin = 4,
+    };
+
+    void PaintPhysicalRelays(const std::string& flowKey)
+    {
+        for (uint32_t relayNode : m_routes.RelaysFor(flowKey))
+        {
+            Paint(relayNode, VizColor::kPaleRed);
+            m_pendingReset.insert(relayNode);
+        }
+    }
+
+    // Upgrade-only: never lets a lower-priority color overwrite a
+    // higher-priority one already showing (e.g. pale red can't dim a red
+    // node, but red CAN paint over the light-purple past-origin marker --
+    // that low rank is what lets the current burst's path show through it).
+    void Paint(uint32_t nodeId, VizColor color)
+    {
+        if (nodeId == m_victimNodeId || RankOf(color) <= RankOf(m_state[nodeId]))
+        {
+            return;
+        }
+        Apply(nodeId, color);
+    }
+
+    void ResetNode(uint32_t nodeId)
+    {
+        if (nodeId == m_victimNodeId)
+        {
+            return;
+        }
+        switch (m_state[nodeId])
+        {
+        case VizColor::kLatestOrigin:
+            // This burst's guess becomes the sole light-purple "immediately
+            // preceding origin" marker; whoever held it before loses it (back
+            // to grey -- older origins are not kept).
+            if (m_mostRecentPastOrigin.has_value() && *m_mostRecentPastOrigin != nodeId)
+            {
+                Apply(*m_mostRecentPastOrigin, VizColor::kGrey);
+            }
+            m_mostRecentPastOrigin = nodeId;
+            Apply(nodeId, VizColor::kPastOrigin);
+            break;
+        case VizColor::kRed:
+        case VizColor::kPaleRed:
+            // Only the current immediately-preceding-origin holder keeps its
+            // light-purple marker; every other node settles back to grey.
+            Apply(nodeId,
+                  (m_mostRecentPastOrigin.has_value() && *m_mostRecentPastOrigin == nodeId)
+                      ? VizColor::kPastOrigin
+                      : VizColor::kGrey);
+            break;
+        case VizColor::kPastOrigin:
+        case VizColor::kGrey:
+            break; // already settled; nothing to do
+        }
+    }
+
+    void Apply(uint32_t nodeId, VizColor color)
+    {
+        m_state[nodeId] = color;
+        switch (color)
+        {
+        case VizColor::kGrey:
+            m_anim.UpdateNodeSize(nodeId, m_nodeSize, m_nodeSize);
+            m_anim.UpdateNodeColor(nodeId, 200, 200, 200);
+            break;
+        case VizColor::kPaleRed:
+            m_anim.UpdateNodeSize(nodeId, m_nodeSize, m_nodeSize);
+            m_anim.UpdateNodeColor(nodeId, 255, 170, 170);
+            break;
+        case VizColor::kRed:
+            m_anim.UpdateNodeSize(nodeId, m_nodeSize * 1.4, m_nodeSize * 1.4);
+            m_anim.UpdateNodeColor(nodeId, 255, 0, 0);
+            break;
+        case VizColor::kPastOrigin:
+            m_anim.UpdateNodeSize(nodeId, m_nodeSize * 1.6, m_nodeSize * 1.6);
+            m_anim.UpdateNodeColor(nodeId, 204, 153, 255); // a past burst's estimated origin: light purple
+            break;
+        case VizColor::kLatestOrigin:
+            m_anim.UpdateNodeSize(nodeId, m_nodeSize * 1.6, m_nodeSize * 1.6);
+            m_anim.UpdateNodeColor(nodeId, 160, 32, 240); // this burst's estimated origin: purple
+            break;
+        }
+    }
+
+    static int RankOf(VizColor color)
+    {
+        return static_cast<int>(color);
+    }
+
+    AnimationInterface& m_anim;
+    PhysicalRouteIndex& m_routes;
+    uint32_t m_victimNodeId;
+    double m_nodeSize;
+    std::map<uint32_t, VizColor> m_state; // absent == kGrey (matches initial NetAnim coloring)
+    std::set<uint32_t> m_pendingReset;
+    std::optional<uint32_t> m_mostRecentPastOrigin; // sole holder of the light-purple marker
+};
 
 } // namespace
 
@@ -156,7 +419,19 @@ main(int argc, char* argv[])
     // colors live as hops are confirmed (qualitative view of Phase 5).
     AnimationInterface anim(netanimPath);
     anim.SetMaxPktsPerTraceFile(500000);
-    anim.UpdateNodeColor(victimNodeId, 0, 0, 255); // victim: blue
+    // NetAnim's built-in default node color is red, which is exactly the color
+    // we use to mark a confirmed traceback hop. Repaint every node to a neutral
+    // grey first so that hops turning red are actually a visible change.
+    // The default node size (1x1 in the ~500-radius ring layout) is far too
+    // small to see, so scale it up, shrinking for larger N to avoid overlap.
+    double nodeSize = std::max(6.0, std::min(25.0, 1500.0 / nodes.GetN()));
+    for (uint32_t i = 0; i < nodes.GetN(); ++i)
+    {
+        anim.UpdateNodeSize(i, nodeSize, nodeSize);
+        anim.UpdateNodeColor(i, 200, 200, 200); // idle relay: grey
+    }
+    anim.UpdateNodeSize(victimNodeId, nodeSize * 1.6, nodeSize * 1.6); // victim: larger
+    anim.UpdateNodeColor(victimNodeId, 0, 180, 0); // victim: green
 
     // Victim's well-known service listener: the endpoint the attacker chain
     // ultimately targets. Runs for the whole simulation.
@@ -191,18 +466,26 @@ main(int argc, char* argv[])
     reidCfg.clusterScoreThreshold = cfg.GetDouble("reidentification.cluster_score_threshold", 0.5);
     ReidentificationEngine reid(&obsLog, &correlator, reidCfg, reidPath);
 
+    PhysicalRouteIndex physicalRoutes;
+    TraceVisualizer viz(anim, physicalRoutes, victimNodeId, nodeSize);
+
     if (cfg.GetBool("correlation.enabled", true))
     {
+        physicalRoutes.Connect();
         victimSink->SetRecvNotify([&observer](uint32_t nodeId, std::string flowKey, double t, Ipv4Address peer) {
             observer.OnFlowObserved(nodeId, flowKey, t, peer);
         });
-        observer.SetTraceCompleteNotify([&reid](uint32_t traceId, double detectTimeS, std::vector<uint32_t> chain,
-                                                 std::string stopReason, std::string hop0FlowKey) {
+        observer.SetTraceStartedNotify(
+            [&viz](uint32_t traceId, double timeS) { viz.OnTraceStarted(traceId, timeS); });
+        observer.SetTraceCompleteNotify([&reid, &viz](uint32_t traceId, double detectTimeS,
+                                                        std::vector<uint32_t> chain, std::string stopReason,
+                                                        std::string hop0FlowKey, std::string lastConfirmedFlowKey) {
             reid.OnTraceComplete(traceId, detectTimeS, chain, stopReason, hop0FlowKey);
+            viz.OnTraceComplete(traceId, chain, stopReason, lastConfirmedFlowKey);
         });
-        observer.SetHopConfirmedNotify([&anim](uint32_t /*traceId*/, uint32_t nodeId, uint32_t /*hopsSoFar*/,
-                                                double /*evalTimeS*/) {
-            anim.UpdateNodeColor(nodeId, 255, 0, 0); // confirmed relay: red
+        observer.SetHopConfirmedNotify([&viz](uint32_t traceId, uint32_t nodeId, uint32_t hopsSoFar,
+                                               double evalTimeS, std::string downstreamFlowKey) {
+            viz.OnHopConfirmed(traceId, nodeId, hopsSoFar, evalTimeS, downstreamFlowKey);
         });
     }
 

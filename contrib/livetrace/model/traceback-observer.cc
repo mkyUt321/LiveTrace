@@ -40,6 +40,12 @@ TracebackObserver::SetHopConfirmedNotify(HopConfirmedFn fn)
 }
 
 void
+TracebackObserver::SetTraceStartedNotify(TraceStartedFn fn)
+{
+    m_traceStarted = fn;
+}
+
+void
 TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double timeS, Ipv4Address peerAddr)
 {
     if (nodeId != m_victimNodeId)
@@ -53,6 +59,10 @@ TracebackObserver::OnFlowObserved(uint32_t nodeId, std::string flowKey, double t
     m_seenAtVictim.insert(flowKey);
 
     uint32_t traceId = m_nextTraceId++;
+    if (m_traceStarted)
+    {
+        m_traceStarted(traceId, timeS);
+    }
     Simulator::Schedule(Seconds(m_cfg.accumulationDelayS),
                          &TracebackObserver::AttemptTrace,
                          this,
@@ -92,7 +102,7 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
         logHop(stopReason, matchedFlow, score);
         if (m_traceComplete)
         {
-            m_traceComplete(traceId, burstDetectTimeS, chainSoFar, stopReason, hop0FlowKey);
+            m_traceComplete(traceId, burstDetectTimeS, chainSoFar, stopReason, hop0FlowKey, confirmedFlowKey);
         }
     };
 
@@ -144,7 +154,10 @@ TracebackObserver::AttemptTrace(uint32_t traceId,
     logHop("matched", match.flowKey, match.score);
     if (m_hopConfirmed)
     {
-        m_hopConfirmed(traceId, peerNode, hopsSoFar, now);
+        // confirmedFlowKey is the flow carrying traffic from peerNode (the
+        // node just confirmed) to the previously confirmed node -- i.e. the
+        // physical segment immediately downstream of this hop.
+        m_hopConfirmed(traceId, peerNode, hopsSoFar, now, confirmedFlowKey);
     }
 
     // Each further hop costs its own slice of the live window -- this is
